@@ -42,6 +42,7 @@ export default async function MoviePage({ params }: Props) {
       <div className="mx-auto max-w-[1600px] space-y-10 px-4 sm:px-6 lg:px-10">
         <div id="watch" className="scroll-mt-20 pt-2">
           <StreamPlayer
+            key={`${meta.imdb_id}-movie`}
             type="movie"
             imdbId={meta.imdb_id}
             title={meta.name}

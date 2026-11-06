@@ -20,11 +20,18 @@ import { cn } from "@/lib/utils";
 interface Props {
   open: boolean;
   onOpenChange: (v: boolean) => void;
-  status: "idle" | "loading" | "loaded" | "none";
+  status: "idle" | "loading" | "interim" | "loaded" | "none";
   cueCount: number;
   loadedLang: "ar" | "en" | null;
   onImportFile: (file: File) => void;
   onRefetch: () => void;
+  /** effective offset for THIS episode (episode override or global default) */
+  offset: number;
+  /** true when an episode-level override exists */
+  offsetScoped: boolean;
+  onNudge: (d: number) => void;
+  onReset: () => void;
+  onSaveDefault: () => void;
   t: (k: DictKey) => string;
 }
 
@@ -36,9 +43,14 @@ export function SubtitleSettingsModal({
   loadedLang,
   onImportFile,
   onRefetch,
+  offset,
+  offsetScoped,
+  onNudge,
+  onReset,
+  onSaveDefault,
   t,
 }: Props) {
-  const { subLang, setSubLang, subSize, setSubSize, subStyle, setSubStyle, subOffset, nudgeSubOffset, setSubOffset } =
+  const { subLang, setSubLang, subSize, setSubSize, subStyle, setSubStyle } =
     useSettings();
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -103,34 +115,57 @@ export function SubtitleSettingsModal({
             </p>
           </section>
 
-          {/* Sync offset */}
+          {/* Sync offset — fine ±0.1s calibration, saved per episode */}
           <section aria-label={t("sync")}>
             <div className="mb-2 flex items-center justify-between">
               <span className="text-sm font-semibold">{t("sync")}</span>
-              <span
-                className={cn(
-                  "rounded-md bg-muted px-2 py-0.5 font-mono text-xs",
-                  subOffset === 0 ? "text-muted-foreground" : "text-primary"
-                )}
-              >
-                {formatOffset(subOffset * 1000)}
+              <span className="flex items-center gap-1.5">
+                <span
+                  className={cn(
+                    "rounded-md px-2 py-0.5 font-mono text-xs",
+                    offset === 0
+                      ? "bg-muted text-muted-foreground"
+                      : "bg-primary/15 text-primary"
+                  )}
+                >
+                  {formatOffset(offset * 1000)}
+                </span>
+                <span
+                  className={cn(
+                    "rounded-md px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide",
+                    offsetScoped
+                      ? "bg-primary/15 text-primary"
+                      : "bg-muted text-muted-foreground"
+                  )}
+                >
+                  {offsetScoped ? t("syncScopeEpisode") : t("syncScopeGlobal")}
+                </span>
               </span>
             </div>
-            <div className="flex items-center justify-center gap-2">
+            <div className="flex items-center justify-center gap-1.5">
               <Button
                 variant="outline"
                 size="sm"
-                className="min-h-[38px] flex-1 font-mono"
-                onClick={() => nudgeSubOffset(-0.5)}
+                className="min-h-[38px] flex-1 px-1 font-mono text-xs"
+                onClick={() => onNudge(-0.5)}
                 aria-label="-0.5s"
               >
-                <Minus className="h-4 w-4" aria-hidden /> 0.5s
+                <Minus className="h-4 w-4" aria-hidden />0.5
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="min-h-[38px] px-2 font-mono text-xs"
+                onClick={() => onNudge(-0.1)}
+                aria-label="-0.1s"
+              >
+                <Minus className="h-3.5 w-3.5" aria-hidden />0.1
               </Button>
               <Button
                 variant="outline"
                 size="sm"
                 className="min-h-[38px] px-3"
-                onClick={() => setSubOffset(0)}
+                onClick={onReset}
                 aria-label={t("reset")}
                 title={t("reset")}
               >
@@ -139,13 +174,37 @@ export function SubtitleSettingsModal({
               <Button
                 variant="outline"
                 size="sm"
-                className="min-h-[38px] flex-1 font-mono"
-                onClick={() => nudgeSubOffset(0.5)}
+                className="min-h-[38px] px-2 font-mono text-xs"
+                onClick={() => onNudge(0.1)}
+                aria-label="+0.1s"
+              >
+                <Plus className="h-3.5 w-3.5" aria-hidden />0.1
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="min-h-[38px] flex-1 px-1 font-mono text-xs"
+                onClick={() => onNudge(0.5)}
                 aria-label="+0.5s"
               >
-                <Plus className="h-4 w-4" aria-hidden /> 0.5s
+                <Plus className="h-4 w-4" aria-hidden />0.5
               </Button>
             </div>
+            <div className="mt-1 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              <span>{t("subsEarly")}</span>
+              <span>{t("subsLate")}</span>
+            </div>
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+              {t("fineSyncHint")}
+            </p>
+            {offsetScoped && (
+              <button
+                onClick={onSaveDefault}
+                className="mt-2 text-xs font-semibold text-primary hover:underline"
+              >
+                {t("saveAsDefault")}
+              </button>
+            )}
           </section>
 
           {/* Font size */}
@@ -162,7 +221,7 @@ export function SubtitleSettingsModal({
               max={52}
               step={2}
               onValueChange={([v]) => setSubSize(v)}
-              ariaLabel={t("subSize")}
+              aria-label={t("subSize")}
             />
             {/* live preview */}
             <div className="mt-3 flex h-14 items-center justify-center rounded-xl bg-zinc-950/90">

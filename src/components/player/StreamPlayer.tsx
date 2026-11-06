@@ -4,7 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getServer, SERVERS } from "@/lib/servers";
 import { useSettings, useHistory } from "@/lib/store";
 import { useT } from "@/hooks/useT";
-import { parseSubtitles, decodeSubtitleBuffer, formatClock } from "@/lib/subParser";
+import { parseSubtitles, decodeSubtitleBuffer, formatClock, formatOffset } from "@/lib/subParser";
+import { readSubOffset, writeSubOffset } from "@/lib/subOffset";
 import { usePlayerSync } from "@/hooks/usePlayerSync";
 import type { MediaType, SubtitleCue } from "@/types";
 import { cn } from "@/lib/utils";
@@ -17,6 +18,8 @@ import {
   Captions,
   ExternalLink,
   Languages,
+  Maximize2,
+  Minimize2,
   MonitorPlay,
   Pause,
   Play,
@@ -79,6 +82,48 @@ export function StreamPlayer({
   const [slow, setSlow] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [overlayDismissed, setOverlayDismissed] = useState(false);
+
+  // ── True fullscreen (stage-level) ──
+  // The whole stage — provider video + subtitle overlay — goes fullscreen as
+  // ONE element, so Arabic captions keep rendering above the video instead of
+  // vanishing (the old bug: the provider iframe became the fullscreen element
+  // and our sibling overlay disappeared). Provider native fullscreen is
+  // stolen back for the stage; browsers without element fullscreen (iOS
+  // Safari) get a fixed-position CSS stage instead.
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const [realFs, setRealFs] = useState(false);
+  const [fakeFs, setFakeFs] = useState(false);
+  const fsActive = realFs || fakeFs;
+
+  // ── per-episode sync memory ──
+  // Every episode is a different rip with its own timing personality — a
+  // +0.3s fix on S8E21 must not poison S8E22. The player remounts per
+  // episode (keyed on imdb+s+e in the watch pages), so a lazy read is safe.
+  // null → global default applies.
+  const [epOffset, setEpOffset] = useState<number | null>(() =>
+    readSubOffset({ type, imdbId, season, episode })
+  );
+  const effectiveOffset = epOffset ?? subOffset;
+
+  const applyOffset = useCallback(
+    (v: number | null) => {
+      setEpOffset(v);
+      writeSubOffset({ type, imdbId, season, episode }, v);
+    },
+    [type, imdbId, season, episode]
+  );
+
+  const nudgeOffset = useCallback(
+    (d: number): number => {
+      const next = Math.max(
+        -30,
+        Math.min(30, Math.round(((epOffset ?? subOffset) + d) * 10) / 10)
+      );
+      applyOffset(next);
+      return next;
+    },
+    [epOffset, subOffset, applyOffset]
+  );
 
   // failover bookkeeping (refs — only touched inside effects/handlers)
   const loadedRef = useRef(false);
@@ -334,6 +379,98 @@ export function StreamPlayer({
     toast({ title: t("syncRunning"), description: t("startSyncHint") });
   };
 
+  // ── True fullscreen control ──
+  const enterFullscreen = useCallback(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const webkitReq = (el as HTMLDivElement & { webkitRequestFullscreen?: () => Promise<void> })
+      .webkitRequestFullscreen;
+    const req = el.requestFullscreen?.bind(el) ?? webkitReq?.bind(el);
+    if (req) {
+      req().catch(() => setFakeFs(true));
+    } else {
+      setFakeFs(true); // iOS Safari: element fullscreen unsupported → CSS stage
+    }
+  }, []);
+
+  const exitFullscreen = useCallback(() => {
+    setFakeFs(false);
+    const webkitDoc = document as Document & { webkitExitFullscreen?: () => void };
+    if (document.fullscreenElement) {
+      (document.exitFullscreen ?? webkitDoc.webkitExitFullscreen)?.call(document);
+    }
+  }, []);
+
+  const toggleFullscreen = useCallback(() => {
+    if (realFs || fakeFs) exitFullscreen();
+    else enterFullscreen();
+  }, [realFs, fakeFs, enterFullscreen, exitFullscreen]);
+
+  // fullscreen tracking + provider-steal: if the provider iframe grabs
+  // fullscreen (its own ⛶ button), swap it for our stage so the subtitle
+  // overlay — a sibling of the iframe — stays in the picture. Works while
+  // the document is fullscreen without a fresh user gesture; hard-fallback
+  // is a CSS stage.
+  useEffect(() => {
+    const onFsChange = () => {
+      const fe = document.fullscreenElement;
+      setRealFs(!!fe && fe === stageRef.current);
+      if (fe && fe === playerFrameRef.current && stageRef.current) {
+        stageRef.current
+          .requestFullscreen()
+          .catch(async () => {
+            try {
+              await document.exitFullscreen();
+            } catch {
+              /* already out */
+            }
+            try {
+              await stageRef.current?.requestFullscreen();
+            } catch {
+              setFakeFs(true);
+            }
+          });
+      }
+    };
+    document.addEventListener("fullscreenchange", onFsChange);
+    document.addEventListener("webkitfullscreenchange", onFsChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFsChange);
+      document.removeEventListener("webkitfullscreenchange", onFsChange);
+    };
+  }, []);
+
+  // keyboard: F = fullscreen · [ = subs later · ] = subs earlier
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (
+        el &&
+        (/^(input|textarea|select)$/i.test(el.tagName) || el.isContentEditable)
+      )
+        return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "f" || e.key === "F") {
+        e.preventDefault();
+        toggleFullscreen();
+      } else if (e.key === "[") {
+        const v = nudgeOffset(-0.1);
+        toast({
+          title: t("sync"),
+          description: `${formatOffset(v * 1000)} · ${t("offsetLater")}`,
+        });
+      } else if (e.key === "]") {
+        const v = nudgeOffset(0.1);
+        toast({
+          title: t("sync"),
+          description: `${formatOffset(v * 1000)} · ${t("offsetEarlier")}`,
+        });
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
   const cueCount = (localCues ?? cues).length;
   const showSubs =
     subLang !== "off" && (subStatus === "loaded" || subStatus === "interim");
@@ -366,8 +503,15 @@ export function StreamPlayer({
 
   return (
     <section className="w-full" aria-label={`${t("playerTitle")} ${fullTitle}`}>
-      {/* ── Video frame ── */}
-      <div className="relative aspect-video w-full overflow-hidden rounded-none border-y border-border/60 bg-black sm:rounded-2xl sm:border">
+      {/* ── Video frame (fullscreen stage) ── */}
+      <div
+        ref={stageRef}
+        className={cn(
+          "relative aspect-video w-full overflow-hidden border-y border-border/60 bg-black sm:rounded-2xl sm:border",
+          fakeFs &&
+            "fixed inset-0 z-[90] aspect-auto h-[100dvh] w-screen rounded-none border-0"
+        )}
+      >
         <iframe
           key={frameToken}
           src={src}
@@ -382,6 +526,23 @@ export function StreamPlayer({
             setLoading(false);
           }}
         />
+
+        {/* fullscreen toggle — stage-level so subtitles ride along (key: F) */}
+        <button
+          onClick={toggleFullscreen}
+          className={cn(
+            "absolute end-3 top-3 z-40 flex h-10 w-10 items-center justify-center rounded-full text-white/90 backdrop-blur transition-all hover:scale-105 active:scale-95",
+            fsActive ? "bg-primary/25 hover:bg-primary/40" : "bg-black/55 hover:bg-black/75"
+          )}
+          title={fsActive ? t("exitFullscreen") : t("fullscreen")}
+          aria-label={fsActive ? t("exitFullscreen") : t("fullscreen")}
+        >
+          {fsActive ? (
+            <Minimize2 className="h-5 w-5" aria-hidden />
+          ) : (
+            <Maximize2 className="h-5 w-5" aria-hidden />
+          )}
+        </button>
 
         {/* loading veil */}
         {loading && (
@@ -441,14 +602,15 @@ export function StreamPlayer({
           />
         )}
 
-        {/* subtitle overlay */}
+        {/* subtitle overlay — Frame-Lock: 60fps clock, zero state-hop latency */}
         <SubtitleOverlay
           cues={localCues ?? cues}
-          currentTime={sync.currentTime}
-          offset={subOffset}
+          getTime={sync.getTime}
+          offset={effectiveOffset}
           sizePx={subSize}
           style={subStyle}
           visible={showSubs}
+          scale={fsActive ? 1.4 : 1}
         />
       </div>
 
@@ -611,6 +773,12 @@ export function StreamPlayer({
           </div>
         )}
 
+        {showSubs && (
+          <p className="text-[11px] leading-relaxed text-muted-foreground/70">
+            {t("fullscreenHint")}
+          </p>
+        )}
+
         <p className="text-[11px] leading-relaxed text-muted-foreground/70">{t("serverHint")}</p>
       </div>
 
@@ -622,6 +790,11 @@ export function StreamPlayer({
         loadedLang={loadedLang}
         onImportFile={importFile}
         onRefetch={refetchSubs}
+        offset={effectiveOffset}
+        offsetScoped={epOffset != null}
+        onNudge={nudgeOffset}
+        onReset={() => applyOffset(null)}
+        onSaveDefault={() => setSubOffset(effectiveOffset)}
         t={t}
       />
     </section>

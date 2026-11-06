@@ -129,18 +129,34 @@ export function usePlayerSync(
         const q = typeof data?.quality === "string" ? data.quality : undefined;
 
         // a real telemetry frame: anchor, mark provider-driven, kill manual clock
+        const now = Date.now();
         providerRef.current = true;
         manualRef.current = false;
         manualStartRef.current = null;
         statusRef.current = status;
-        lastPingRef.current = Date.now();
-        anchorRef.current = { t: time, wall: Date.now() };
+        lastPingRef.current = now;
+
+        // ── Frame-Lock clock fusion ──
+        // Provider pings carry a timestamp sampled BEFORE the relay chain
+        // delivered the frame, so hard-anchoring every ping injects 100–300ms
+        // of stutter into the cue timeline. Fuse instead:
+        //  · large error (seek / resume / source jump) → snap instantly
+        //  · small error (pipeline jitter) → correct 35% per ping; residual
+        //    drift decays silently over the next pings with no visible jump
+        const prev = anchorRef.current;
+        let fused = time;
+        if (statusRef.current === "playing" && status === "playing") {
+          const predicted = prev.t + (now - prev.wall) / 1000;
+          const err = time - predicted;
+          if (Math.abs(err) <= 1.5) fused = predicted + err * 0.35;
+        }
+        anchorRef.current = { t: fused, wall: now };
 
         setState((s) => ({
           ...s,
           providerDriven: true,
           status,
-          currentTime: time,
+          currentTime: fused,
           duration: dur && dur > 0 ? dur : s.duration,
           quality: q ?? s.quality,
           estimated: false,
@@ -207,6 +223,19 @@ export function usePlayerSync(
     setState((s) => ({ ...s, manualMode: false, status: "idle" }));
   }, []);
 
+  // ── frame-accurate live clock (callable every rAF — no React state hop) ──
+  // The subtitle overlay pulls this 60×/s; the 4Hz `currentTime` state above
+  // remains for the transport bar / progress UI only.
+  const getTime = useCallback(() => {
+    if (manualRef.current) {
+      const started = manualStartRef.current;
+      return started != null ? Math.max(0, (Date.now() - started) / 1000) : 0;
+    }
+    if (!providerRef.current) return 0;
+    const a = anchorRef.current;
+    return statusRef.current === "playing" ? a.t + (Date.now() - a.wall) / 1000 : a.t;
+  }, []);
+
   // ── transport commands (relayed down to the vidsrc-family player) ──
   const sendCommand = useCallback(
     (action: "play" | "pause" | "mute" | "unmute") => {
@@ -228,5 +257,5 @@ export function usePlayerSync(
     []
   );
 
-  return { ...state, armManual, stopManual, sendCommand };
+  return { ...state, getTime, armManual, stopManual, sendCommand };
 }
