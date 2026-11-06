@@ -52,3 +52,15 @@ prompt
 server.log
 # Skills directory
 /skills/
+# Screenshots and verification captures
+verify-*.png
+
+# Scratchpads and local runtime outputs
+tool-results/
+download/
+.zscripts/
+
+# Local databases
+db/*.db
+db/*.sqlite
+*.sqlite3
