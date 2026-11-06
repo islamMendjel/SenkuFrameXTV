@@ -87,11 +87,12 @@ export default async function EpisodePage({ params }: Props) {
       {/* `isolate` keeps the ambient glow contained; the player's CSS
           fullscreen fallback lifts it via [data-fs-stage] (globals.css) so
           the fake-fullscreen stage can rise above the fixed navbar. */}
-      {/* ambient cinema glow — poster light bleeding behind the stage */}
+      {/* ambient cinema glow — poster light bleeding behind the stage; breathes
+          up while the stream plays (.stage-ambient-src in globals.css) */}
       {meta.poster && (
-        <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[520px] overflow-hidden">
+        <div aria-hidden className="stage-ambient pointer-events-none absolute inset-x-0 top-0 -z-10 h-[520px] overflow-hidden">
           <div
-            className="absolute inset-0 bg-cover bg-top opacity-[0.16] blur-3xl saturate-150"
+            className="stage-ambient-src absolute inset-0 bg-cover bg-top opacity-[0.16] blur-3xl saturate-150"
             style={{ backgroundImage: `url(${meta.poster})` }}
           />
           <div className="absolute inset-0 bg-gradient-to-b from-background/40 via-background/75 to-background" />
@@ -125,7 +126,7 @@ export default async function EpisodePage({ params }: Props) {
             nextEpisode={nextEpisode}
           />
           {ep?.overview && (
-            <div className="mt-5 rounded-2xl border border-border/50 bg-card/40 p-5">
+            <div className="theater-dim mt-5 rounded-2xl border border-border/50 bg-card/40 p-5">
               <h2 className="mb-2 text-sm font-extrabold uppercase tracking-wider text-muted-foreground">
                 {ep.title || `Episode ${episode}`}
               </h2>
@@ -136,7 +137,9 @@ export default async function EpisodePage({ params }: Props) {
           )}
         </div>
 
-        <aside className="min-w-0 px-4 sm:px-0">
+        {/* the house — episode list dims like cinema lights while the stream
+            plays; hover/focus brings them right back */}
+        <aside className="theater-dim min-w-0 px-4 sm:px-0">
           <div className="rounded-2xl border border-border/50 bg-card/40 p-4 lg:sticky lg:top-20">
             <EpisodePicker meta={meta} imdbId={id} currentSeason={season} currentEpisode={episode} compact />
           </div>

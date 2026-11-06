@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import type { Meta } from "@/types";
 import { displayName } from "@/lib/i18n";
 import { useT } from "@/hooks/useT";
-import { useSettings, useWatchlist } from "@/lib/store";
+import { useSettings, useWatchlist, useHistory } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Bookmark, BookmarkCheck, ChevronLeft, Clapperboard, Play, Star } from "lucide-react";
 
@@ -23,10 +23,22 @@ export function DetailsHeader({ meta, watchHref, watchLabel }: Props) {
   const t = useT();
   const has = useWatchlist((s) => s.items.some((i) => i.imdbId === meta.imdb_id));
   const toggle = useWatchlist((s) => s.toggle);
+  const entry = useHistory((s) => s.entries[meta.imdb_id]);
 
   const title = displayName(meta.name, lang);
   const year = meta.releaseInfo?.split("–")[0]?.slice(0, 4);
   const runtime = meta.runtime ? meta.runtime.replace(/min.*/, "").trim() : null;
+
+  // resume-aware CTA — if this viewer left mid-season, the button jumps
+  // straight back to the exact episode instead of the first one
+  const resumeHref =
+    entry?.season && entry.episode
+      ? `/tv/${meta.imdb_id}/${entry.season}/${entry.episode}`
+      : null;
+  const finalHref = resumeHref ?? watchHref ?? "#watch";
+  const finalLabel = resumeHref
+    ? `${t("resume")} · S${entry?.season}·E${entry?.episode}`
+    : (watchLabel ?? t("watchNow"));
 
   return (
     <section className="relative w-full overflow-hidden">
@@ -104,11 +116,11 @@ export function DetailsHeader({ meta, watchHref, watchLabel }: Props) {
 
             <div className="flex flex-wrap items-center gap-3 pt-1">
               <a
-                href={watchHref ?? "#watch"}
+                href={finalHref}
                 className="flex min-h-[44px] items-center gap-2 rounded-full bg-primary px-6 py-2.5 text-sm font-black text-black shadow-[0_0_28px_rgba(16,185,129,0.45)] transition-all hover:scale-[1.03] hover:shadow-[0_0_38px_rgba(16,185,129,0.6)] active:scale-95"
               >
                 <Play className="h-4 w-4 fill-black" aria-hidden />
-                {watchLabel ?? t("watchNow")}
+                {finalLabel}
               </a>
               <button
                 onClick={() =>

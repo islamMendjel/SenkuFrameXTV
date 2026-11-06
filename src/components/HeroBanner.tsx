@@ -5,17 +5,22 @@ import Link from "next/link";
 import type { Meta } from "@/types";
 import { displayName } from "@/lib/i18n";
 import { useT } from "@/hooks/useT";
-import { useSettings } from "@/lib/store";
+import { useSettings, useHistory } from "@/lib/store";
 import { cn } from "@/lib/utils";
-import { Info, Play, Star } from "lucide-react";
+import { Info, Play, RotateCcw, Star } from "lucide-react";
 
 // ─── HeroBanner · cinematic auto-carousel with ken-burns backdrops ───────────
+// The primary CTA is a DEEP-PLAY button, not a browse link: movies jump
+// straight to the Screening Room stage (#watch), series resume the exact
+// episode the viewer left (or start S1·E1). One click → picture. The
+// secondary button keeps the classic details-page path.
 
 const ROTATE_MS = 7000;
 
 export function HeroBanner({ metas }: { metas: Meta[] }) {
   const lang = useSettings((s) => s.lang);
   const t = useT();
+  const entries = useHistory((s) => s.entries);
   const [index, setIndex] = useState(0);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const count = Math.min(metas.length, 5);
@@ -40,6 +45,31 @@ export function HeroBanner({ metas }: { metas: Meta[] }) {
   const title = displayName(hero.name, lang);
   const year = hero.releaseInfo?.split("–")[0]?.slice(0, 4);
   const href = hero.type === "series" ? `/tv/${hero.imdb_id}` : `/movie/${hero.imdb_id}`;
+
+  // ── deep-play target ── one click from the hero straight into the picture:
+  // movies land on the Screening Room stage, series resume the exact episode
+  // (or start the pilot). Falls back to the details page if no episode data.
+  const entry = entries[hero.imdb_id];
+  const resumable = !!entry && entry.progressPct > 1 && entry.progressPct < 96;
+  let playHref = hero.type === "series" ? href : `${href}#watch`;
+  let playLabel = t("watchNow");
+  if (hero.type === "series") {
+    if (entry?.season && entry.episode) {
+      playHref = `/tv/${hero.imdb_id}/${entry.season}/${entry.episode}`;
+    } else {
+      const pilot = hero.videos?.find((v) => v.season === 1 && v.episode === 1);
+      playHref = pilot
+        ? `/tv/${hero.imdb_id}/1/1`
+        : href;
+      playLabel = pilot ? t("watchS1E1") : playLabel;
+    }
+  }
+  if (resumable) {
+    playLabel =
+      hero.type === "series" && entry?.season && entry.episode
+        ? `${t("resume")} · S${entry.season}·E${entry.episode}`
+        : t("resume");
+  }
 
   return (
     <section
@@ -110,11 +140,15 @@ export function HeroBanner({ metas }: { metas: Meta[] }) {
 
             <div className="flex items-center gap-3 pt-1 sm:pt-2">
               <Link
-                href={href}
+                href={playHref}
                 className="flex min-h-[44px] items-center gap-2 rounded-full bg-primary px-6 py-2.5 text-sm font-black text-black shadow-[0_0_28px_rgba(16,185,129,0.45)] transition-all hover:scale-[1.03] hover:shadow-[0_0_38px_rgba(16,185,129,0.6)] active:scale-95"
               >
-                <Play className="h-4 w-4 fill-black" aria-hidden />
-                {t("watchNow")}
+                {resumable ? (
+                  <RotateCcw className="h-4 w-4" aria-hidden />
+                ) : (
+                  <Play className="h-4 w-4 fill-black" aria-hidden />
+                )}
+                {playLabel}
               </Link>
               <Link
                 href={href}

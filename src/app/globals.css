@@ -285,3 +285,65 @@ html:not(.dark) {
 html[data-player-docked] .senku-page-root {
   isolation: auto !important;
 }
+
+/* ---------- Lights-Down theater mode ---------- */
+/* The Screening Room: while a stream is actually playing, StreamPlayer flags
+   <html> with data-theater. Everything the page marked .theater-dim ("the
+   house") fades like cinema lights going down; reaching for it (hover or
+   keyboard focus) brings the lights straight back — the room responds to
+   you. Pausing restores the full page. */
+.theater-dim {
+  transition:
+    opacity 700ms cubic-bezier(0.4, 0, 0.2, 1),
+    filter 700ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+html[data-theater="1"] .theater-dim {
+  opacity: 0.32;
+  filter: saturate(0.5);
+}
+html[data-theater="1"] .theater-dim:hover,
+html[data-theater="1"] .theater-dim:focus-within {
+  opacity: 1;
+  filter: saturate(1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .theater-dim {
+    transition: opacity 120ms linear, filter 120ms linear;
+  }
+}
+
+/* The ambient glow behind the stage breathes up while the stream runs —
+   the "projector light" intensifying. Pages wrap the blurred source div
+   in .stage-ambient and tag the blurred layer .stage-ambient-src. */
+.stage-ambient-src {
+  transition: opacity 1100ms ease;
+}
+html[data-theater="1"] .stage-ambient-src {
+  opacity: 0.34;
+}
+
+/* ---------- Deep-play arrival pulse ---------- */
+/* Landing on a watch page via a #watch deep link (hero CTA / card play chip)
+   makes the stage flash alive once — a soft emerald ring tracing the screen
+   edge. Pure CSS (:target), no JS. */
+@keyframes stage-arrival {
+  0% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  22% {
+    box-shadow:
+      0 0 46px 2px color-mix(in oklab, var(--primary) 28%, transparent),
+      inset 0 0 0 1px color-mix(in oklab, var(--primary) 45%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+#watch:target {
+  animation: stage-arrival 2.8s ease-out 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  #watch:target {
+    animation: none;
+  }
+}

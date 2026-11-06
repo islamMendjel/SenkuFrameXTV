@@ -742,6 +742,22 @@ export function StreamPlayer({
     };
   }, [fakeFs]);
 
+  // ── Lights-Down (The Screening Room) ──
+  // While the stream is actually playing, flag <html> so watch pages dim
+  // everything below the stage like house lights in a cinema (.theater-dim
+  // in globals.css). Pause/buffer → lights back up. Cleanup guarantees the
+  // flag never leaks across route changes or player remounts.
+  useEffect(() => {
+    if (sync.status === "playing") {
+      document.documentElement.dataset.theater = "1";
+    } else {
+      delete document.documentElement.dataset.theater;
+    }
+    return () => {
+      delete document.documentElement.dataset.theater;
+    };
+  }, [sync.status]);
+
   // ── fullscreen HUD visibility ──
   // Native-player behaviour: the top HUD fades while playback runs and comes
   // back the moment it pauses (no tap-detection possible over the provider

@@ -4,11 +4,16 @@ import { memo } from "react";
 import Link from "next/link";
 import type { Meta } from "@/types";
 import { displayName } from "@/lib/i18n";
+import { useT } from "@/hooks/useT";
 import { useSettings, useWatchlist, useHistory } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Bookmark, BookmarkCheck, Play, Star } from "lucide-react";
 
-// ─── MediaCard · poster card w/ rating, watchlist, progress ──────────────────
+// ─── MediaCard · poster card w/ rating, watchlist, progress, deep-play ───────
+// Two paths, two intents: the poster opens the details page; the centered
+// play chip (hover on desktop) jumps STRAIGHT into the picture — movies land
+// on the Screening Room stage (#watch), series resume the exact episode the
+// viewer left (or start the pilot). No extra clicks between impulse and play.
 
 interface Props {
   meta: Meta;
@@ -18,6 +23,7 @@ interface Props {
 
 function MediaCardBase({ meta, className }: Props) {
   const lang = useSettings((s) => s.lang);
+  const t = useT();
   const has = useWatchlist((s) => s.items.some((i) => i.imdbId === meta.imdb_id));
   const toggle = useWatchlist((s) => s.toggle);
   const historyEntry = useHistory((s) => s.entries[meta.imdb_id]);
@@ -28,6 +34,14 @@ function MediaCardBase({ meta, className }: Props) {
       : `/movie/${meta.imdb_id}`;
   const title = displayName(meta.name, lang);
   const year = meta.releaseInfo?.split("–")[0]?.slice(0, 4);
+
+  // deep-play target — resume the exact episode, else the pilot, else details
+  const playHref =
+    meta.type === "movie"
+      ? `/movie/${meta.imdb_id}#watch`
+      : historyEntry?.season && historyEntry.episode
+        ? `/tv/${meta.imdb_id}/${historyEntry.season}/${historyEntry.episode}`
+        : `/tv/${meta.imdb_id}/1/1`;
 
   return (
     <div className={cn("group relative", className)}>
@@ -64,13 +78,6 @@ function MediaCardBase({ meta, className }: Props) {
             </span>
           )}
 
-          {/* hover play */}
-          <div className="absolute inset-0 flex items-center justify-center opacity-0 transition-all duration-300 group-hover:opacity-100">
-            <span className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/95 text-black shadow-[0_0_24px_rgba(16,185,129,0.55)] transition-transform duration-300 group-hover:scale-110">
-              <Play className="ms-0.5 h-5 w-5 fill-black" aria-hidden />
-            </span>
-          </div>
-
           {/* title + year */}
           <div className="absolute inset-x-0 bottom-0 p-2.5">
             <p className="line-clamp-2 text-[13px] font-bold leading-tight text-white drop-shadow">
@@ -92,6 +99,17 @@ function MediaCardBase({ meta, className }: Props) {
             </div>
           )}
         </div>
+      </Link>
+
+      {/* deep-play chip — its own link above the poster: movies land on the
+          Screening Room stage, series resume/pilot. Rises on hover/focus;
+          tapping the poster itself still opens details (touch-friendly). */}
+      <Link
+        href={playHref}
+        aria-label={`${title} — ${t("watchNow")}`}
+        className="absolute left-1/2 top-[42%] z-10 flex h-12 w-12 -translate-x-1/2 -translate-y-1/2 scale-75 items-center justify-center rounded-full bg-primary/95 text-black opacity-0 shadow-[0_0_24px_rgba(16,185,129,0.55)] transition-all duration-300 group-hover:scale-110 group-hover:opacity-100 focus-visible:scale-110 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+      >
+        <Play className="ms-0.5 h-5 w-5 fill-black" aria-hidden />
       </Link>
 
       {/* watchlist toggle */}
