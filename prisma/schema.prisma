@@ -30,3 +30,17 @@ model Post {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
+// Server-side cache for translated subtitle tracks.
+// Key format: "{imdbId}:{type}:{lang}:{season}:{episode}"
+// Cues are stored as a JSON array of { start, end, text }.
+model SubtitleCache {
+  id        String   @id @default(cuid())
+  cacheKey  String   @unique
+  lang      String
+  count     Int
+  source    String
+  cuesJson  String
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+}

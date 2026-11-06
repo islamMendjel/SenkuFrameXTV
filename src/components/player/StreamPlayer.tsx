@@ -71,6 +71,7 @@ export function StreamPlayer({
   const [subStatus, setSubStatus] = useState<SubStatus>("idle");
   const [loadedLang, setLoadedLang] = useState<"ar" | "en" | null>(null);
   const [localCues, setLocalCues] = useState<SubtitleCue[] | null>(null);
+  const localCuesRef = useRef<SubtitleCue[] | null>(null);
 
   // ── time tracking ──
   const [providerTime, setProviderTime] = useState<number | null>(null);
@@ -170,39 +171,66 @@ export function StreamPlayer({
   };
 
   // ── subtitle fetching (Arabic default → English fallback preference) ──
+  // Server may respond { pending: true } while the AI translation job runs;
+  // poll every 5 s (up to ~4 min) until cues are ready.
   const [subFetchNonce, setSubFetchNonce] = useState(0);
   useEffect(() => {
     if (subLang === "off") return;
     let cancelled = false;
-    // mark loading on a macrotask (effect-body stays side-effect free)
+    let pollT: ReturnType<typeof setTimeout> | null = null;
     const loadingT = setTimeout(() => !cancelled && setSubStatus("loading"), 0);
     (async () => {
-      try {
-        const qs = new URLSearchParams({ type, id: imdbId, lang: subLang === "ar" ? "ar" : "en" });
-        if (type === "series" && season) qs.set("season", String(season));
-        if (type === "series" && episode) qs.set("episode", String(episode));
-        const res = await fetch(`/api/subtitles?${qs}`);
-        const data = (await res.json()) as { cues?: SubtitleCue[]; count?: number };
-        if (cancelled) return;
-        const got = data.cues ?? [];
-        if (got.length > 0) {
-          setCues(got);
-          setSubStatus("loaded");
-          setLoadedLang(subLang);
-          toast({
-            title: subLang === "ar" ? t("subsLoaded") : t("subsLoadedEn"),
-            description: `${got.length.toLocaleString()} cues · ${t("appName")}`,
-          });
-        } else {
-          setSubStatus("none");
+      for (let attempt = 0; attempt < 48 && !cancelled; attempt++) {
+        try {
+          const qs = new URLSearchParams({ type, id: imdbId, lang: subLang === "ar" ? "ar" : "en" });
+          if (type === "series" && season) qs.set("season", String(season));
+          if (type === "series" && episode) qs.set("episode", String(episode));
+          const res = await fetch(`/api/subtitles?${qs}`);
+          const data = (await res.json()) as {
+            cues?: SubtitleCue[];
+            count?: number;
+            pending?: boolean;
+            progress?: number;
+          };
+          if (cancelled) return;
+          if (data.pending) {
+            setSubStatus("loading");
+            await new Promise<void>((r) => {
+              pollT = setTimeout(r, 5000);
+            });
+            continue;
+          }
+          const got = data.cues ?? [];
+          if (got.length > 0) {
+            if (!localCuesRef.current) setCues(got);
+            setSubStatus("loaded");
+            setLoadedLang(subLang);
+            toast({
+              title: subLang === "ar" ? t("subsLoaded") : t("subsLoadedEn"),
+              description: `${got.length.toLocaleString()} cues · ${t("appName")}`,
+            });
+            // auto-start the subtitle clock shortly after load (providers
+            // autoplay muted); the Sync button re-zeros it any time
+            setTimeout(() => {
+              if (cancelled) return;
+              setClockTime(0);
+              setClockRunning(true);
+            }, 2500);
+          } else {
+            setSubStatus("none");
+          }
+          return;
+        } catch {
+          if (!cancelled) setSubStatus("none");
+          return;
         }
-      } catch {
-        if (!cancelled) setSubStatus("none");
       }
+      if (!cancelled) setSubStatus("none");
     })();
     return () => {
       cancelled = true;
       clearTimeout(loadingT);
+      if (pollT) clearTimeout(pollT);
     };
   }, [subLang, type, imdbId, season, episode, t, subFetchNonce]);
 
@@ -218,6 +246,7 @@ export function StreamPlayer({
           return;
         }
         setLocalCues(parsed);
+        localCuesRef.current = parsed;
         setCues(parsed);
         setSubStatus("loaded");
         setLoadedLang(parsed.some((c) => /[\u0600-\u06FF]/.test(c.text)) ? "ar" : "en");
