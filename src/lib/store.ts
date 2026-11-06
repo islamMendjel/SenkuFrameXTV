@@ -3,6 +3,7 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import type { HistoryEntry, MediaType, SubLang, UILang, WatchlistItem } from "@/types";
+import { sanitizePreferredServer } from "@/lib/servers";
 
 // ─── Settings · lang en default, sub arabic default, server memory ──────────
 
@@ -39,7 +40,25 @@ export const useSettings = create<SettingsState>()(
       setSubStyle: (subStyle) => set({ subStyle }),
       setPreferredServer: (preferredServer) => set({ preferredServer }),
     }),
-    { name: "senku-settings", storage: createJSONStorage(() => localStorage) }
+    {
+      name: "senku-settings",
+      version: 2,
+      storage: createJSONStorage(() => localStorage),
+      // v2: frameXTV's embed falls back to a backup player that hard-fails
+      // behind a "Please Disable Sandbox" screen. Reset stale frameXTV
+      // preferences (and any unknown ids) so the verified-first order applies.
+      migrate: (persisted) => {
+        const p = (persisted ?? {}) as Partial<SettingsState>;
+        return {
+          lang: p.lang ?? "en",
+          subLang: p.subLang ?? "ar",
+          subOffset: p.subOffset ?? 0,
+          subSize: p.subSize ?? 28,
+          subStyle: p.subStyle ?? "outline",
+          preferredServer: sanitizePreferredServer(p.preferredServer),
+        } as SettingsState;
+      },
+    }
   )
 );
 
