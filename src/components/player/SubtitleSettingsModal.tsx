@@ -20,7 +20,7 @@ import { cn } from "@/lib/utils";
 interface Props {
   open: boolean;
   onOpenChange: (v: boolean) => void;
-  status: "idle" | "loading" | "interim" | "loaded" | "none";
+  status: "idle" | "loading" | "loaded" | "none";
   cueCount: number;
   loadedLang: "ar" | "en" | null;
   onImportFile: (file: File) => void;
@@ -29,6 +29,8 @@ interface Props {
   offset: number;
   /** true when an episode-level override exists */
   offsetScoped: boolean;
+  /** built-in lead that pre-empts provider stream latency */
+  lead: number;
   onNudge: (d: number) => void;
   onReset: () => void;
   onSaveDefault: () => void;
@@ -45,6 +47,7 @@ export function SubtitleSettingsModal({
   onRefetch,
   offset,
   offsetScoped,
+  lead,
   onNudge,
   onReset,
   onSaveDefault,
@@ -119,7 +122,13 @@ export function SubtitleSettingsModal({
           <section aria-label={t("sync")}>
             <div className="mb-2 flex items-center justify-between">
               <span className="text-sm font-semibold">{t("sync")}</span>
-              <span className="flex items-center gap-1.5">
+              <span className="flex flex-wrap items-center justify-end gap-1.5">
+                <span
+                  className="rounded-md bg-primary/10 px-2 py-0.5 font-mono text-[10px] font-bold text-primary/80"
+                  title={t("autoLeadHint")}
+                >
+                  {t("autoLead")} +{lead.toFixed(1)}s
+                </span>
                 <span
                   className={cn(
                     "rounded-md px-2 py-0.5 font-mono text-xs",

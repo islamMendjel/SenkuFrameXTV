@@ -97,6 +97,8 @@ export const DICT = {
     syncScopeEpisode: "This episode",
     syncScopeGlobal: "Global",
     saveAsDefault: "Save as default",
+    autoLead: "auto lead",
+    autoLeadHint: "Built-in lead that pre-empts provider stream latency, so captions stay locked with the audio.",
     // autopilot + transport
     upNext: "Up next",
     autopilotIn: "Playing next episode in",
@@ -241,6 +243,8 @@ export const DICT = {
     syncScopeEpisode: "هذه الحلقة",
     syncScopeGlobal: "عام",
     saveAsDefault: "حفظ كافتراضي",
+    autoLead: "تقديم تلقائي",
+    autoLeadHint: "تقديم مدمج يعوّض تأخير بث المشغّل لتبقى الترجمة مقفلة على الصوت.",
     // autopilot + transport
     upNext: "التالي",
     autopilotIn: "تشغيل الحلقة التالية خلال",

@@ -49,11 +49,19 @@ interface Props {
   nextEpisode?: NextEpisodeInfo;
 }
 
-type SubStatus = "idle" | "loading" | "interim" | "loaded" | "none";
+type SubStatus = "idle" | "loading" | "loaded" | "none";
 
 // NOTE: no `sandbox` attribute on player iframes — VidSrc-family providers
 // detect sandboxed frames and refuse to play ("Please Disable Sandbox").
 // We keep the frame locked down via `allow` permissions instead.
+
+// ── Auto lead (Frame-Lock ±) ──
+// Provider telemetry is sampled BEFORE it travels the relay chain
+// (player → wrapper iframe → our window) and is quantized to 0.1s, so the
+// reconstructed clock structurally trails the audio by ~300–500ms. The
+// subtitle lookup compensates with a constant lead — the transport bar and
+// watch-history stay exact. Per-episode [ / ] nudges stack on top.
+const SUBTITLE_LEAD_S = 0.4;
 
 export function StreamPlayer({
   type,
@@ -222,20 +230,14 @@ export function StreamPlayer({
             count?: number;
             pending?: boolean;
             progress?: number;
-            interim?: boolean;
           };
           if (cancelled) return;
           if (data.pending) {
             sawWork = true;
             setSubProgress(typeof data.progress === "number" ? data.progress : null);
-            // English interim track: captions NOW while Arabic AI cooks
-            if (data.interim && Array.isArray(data.cues) && data.cues.length > 0 && !localCuesRef.current) {
-              setCues(data.cues);
-              setSubStatus("interim");
-              setLoadedLang("en");
-            } else {
-              setSubStatus((s) => (s === "interim" ? s : "loading"));
-            }
+            // Arabic-only policy (user requirement): while the AI translation
+            // cooks we show NO interim English track — silence until Arabic.
+            setSubStatus("loading");
             await new Promise<void>((r) => {
               pollT = setTimeout(r, 5000);
             });
@@ -254,11 +256,11 @@ export function StreamPlayer({
               });
             }
           } else {
-            setSubStatus((s) => (s === "interim" ? "interim" : "none"));
+            setSubStatus("none");
           }
           return;
         } catch {
-          if (!cancelled) setSubStatus((s) => (s === "interim" ? "interim" : "none"));
+          if (!cancelled) setSubStatus("none");
           return;
         }
       }
@@ -416,20 +418,31 @@ export function StreamPlayer({
       const fe = document.fullscreenElement;
       setRealFs(!!fe && fe === stageRef.current);
       if (fe && fe === playerFrameRef.current && stageRef.current) {
-        stageRef.current
-          .requestFullscreen()
-          .catch(async () => {
+        const stage = stageRef.current;
+        void (async () => {
+          try {
+            await stage.requestFullscreen();
+          } catch {
             try {
               await document.exitFullscreen();
             } catch {
               /* already out */
             }
             try {
-              await stageRef.current?.requestFullscreen();
+              await stage.requestFullscreen();
             } catch {
-              setFakeFs(true);
+              /* gesture-policy denied — clean exit below */
             }
-          });
+          }
+          // if the steal didn't take (browser gesture policy), leave the
+          // provider's fullscreen entirely — our ⛶ button re-enters at stage
+          // level, where subtitles live
+          setTimeout(() => {
+            if (document.fullscreenElement === playerFrameRef.current) {
+              document.exitFullscreen?.().catch(() => {});
+            }
+          }, 400);
+        })();
       }
     };
     document.addEventListener("fullscreenchange", onFsChange);
@@ -472,9 +485,8 @@ export function StreamPlayer({
   });
 
   const cueCount = (localCues ?? cues).length;
-  const showSubs =
-    subLang !== "off" && (subStatus === "loaded" || subStatus === "interim");
-  const translatingAr = subLang === "ar" && subStatus === "interim";
+  const showSubs = subLang !== "off" && subStatus === "loaded";
+  const translatingAr = subLang === "ar" && subStatus === "loading";
   const progressPct =
     sync.duration > 0 ? Math.min(100, (sync.currentTime / sync.duration) * 100) : 0;
 
@@ -508,9 +520,11 @@ export function StreamPlayer({
         ref={stageRef}
         className={cn(
           "relative aspect-video w-full overflow-hidden border-y border-border/60 bg-black sm:rounded-2xl sm:border",
-          fakeFs &&
-            "fixed inset-0 z-[90] aspect-auto h-[100dvh] w-screen rounded-none border-0"
+          fakeFs && "fixed inset-0 z-[90] aspect-auto h-[100dvh] w-screen"
         )}
+        // inline style beats the sm: variants (Tailwind cascade) so the
+        // fullscreen stage is edge-to-edge: no rounded corners, no border
+        style={fsActive ? { borderRadius: 0, borderWidth: 0 } : undefined}
       >
         <iframe
           key={frameToken}
@@ -606,7 +620,7 @@ export function StreamPlayer({
         <SubtitleOverlay
           cues={localCues ?? cues}
           getTime={sync.getTime}
-          offset={effectiveOffset}
+          offset={effectiveOffset + SUBTITLE_LEAD_S}
           sizePx={subSize}
           style={subStyle}
           visible={showSubs}
@@ -792,6 +806,7 @@ export function StreamPlayer({
         onRefetch={refetchSubs}
         offset={effectiveOffset}
         offsetScoped={epOffset != null}
+        lead={SUBTITLE_LEAD_S}
         onNudge={nudgeOffset}
         onReset={() => applyOffset(null)}
         onSaveDefault={() => setSubOffset(effectiveOffset)}
