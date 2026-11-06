@@ -4,6 +4,7 @@ import { fetchBestSrt } from "@/lib/subtitlecat";
 import { translateCues } from "@/lib/llmTranslate";
 import { db } from "@/lib/db";
 import { getMeta } from "@/lib/cinemeta";
+import { buildSubCacheKey } from "@/lib/subCacheKey";
 import type { SubtitleCue, SubtitleTrackInfo } from "@/types";
 
 // ─── GET /api/subtitles?type=&id=&lang=ar|en&season=&episode= ────────────────
@@ -64,21 +65,8 @@ const jobs: Map<string, SubJob> =
   (globalThis.__senkuSubJobs as Map<string, SubJob>) ??
   (globalThis.__senkuSubJobs = new Map<string, SubJob>());
 
-// Translation-engine version — bump to invalidate stale AI translations.
-// t2 → v2 repair engine (no more English leftovers). Only applies to the
-// AI-translated 'ar' lane; human EN tracks are release-matched, not generated.
-const AR_TRANSLATION_VERSION = "t4";
-
-function buildKey(
-  type: string,
-  imdbId: string,
-  lang: string,
-  season?: number,
-  episode?: number
-): string {
-  const langTag = lang === "ar" ? `ar@${AR_TRANSLATION_VERSION}` : "en";
-  return `${imdbId}:${type}:${langTag}:${season ?? 0}:${episode ?? 0}`;
-}
+// Translation-engine version lives in @/lib/subCacheKey (shared with the
+// provider-native /api/subs/* endpoints so every surface agrees on keys).
 
 // ── source 1: official OpenSubtitles API (needs env key) ──
 async function viaOfficialApi(
@@ -325,7 +313,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "invalid id" }, { status: 400 });
   }
 
-  const cacheKey = buildKey(type, imdbId, lang, season, episode);
+  const cacheKey = buildSubCacheKey(type, imdbId, lang, season, episode);
 
   // 0a. memory
   const hit = memCache.get(cacheKey);

@@ -268,3 +268,11 @@ html:not(.dark) {
 [dir="rtl"] .flip-x {
   transform: scaleX(-1);
 }
+
+/* ---------- CSS fullscreen stage ---------- */
+/* While the player's fake-fullscreen (CSS) stage is active, the page wrapper
+   must not isolate it below the fixed navbar — lift the whole page root so
+   the stage's z-[9999] competes in the root stacking context. */
+[data-fs-stage] .senku-page-root {
+  isolation: auto !important;
+}

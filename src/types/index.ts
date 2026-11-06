@@ -93,10 +93,26 @@ export interface HistoryEntry {
   updatedAt: number;
 }
 
+// Options the player can pass when building a provider embed URL.
+export interface ServerBuildOpts {
+  /** https URL of our cached track (WebVTT) — injected as the provider's
+   *  auto-applied external subtitle (VidSrc sub_url / SuperEmbed sub_url). */
+  subUrl?: string;
+}
+
 export interface ServerDef {
   id: string;
   name: string;
   tag?: string;
   quality: string;
-  build: (type: MediaType, imdbId: string, season?: number, episode?: number) => string;
+  build: (
+    type: MediaType,
+    imdbId: string,
+    season?: number,
+    episode?: number,
+    opts?: ServerBuildOpts
+  ) => string;
+  /** Provider accepts an external auto-applied subtitle track → the player
+   *  probes /api/subs/available and injects our Arabic VTT when cached. */
+  nativeSubs?: boolean;
 }

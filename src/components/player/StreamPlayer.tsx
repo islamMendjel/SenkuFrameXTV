@@ -162,7 +162,75 @@ export function StreamPlayer({
   const showAutopilot = autopilotFinished && !autopilotDismissed;
 
   const server = getServer(serverId);
-  const src = server.build(type, imdbId, season, episode);
+
+  // ── Provider-native Arabic track (VidSrc ds_lang/sub_url injection) ──
+  // When a cached Arabic track exists, it is handed to the provider as an
+  // auto-applied external subtitle (sub_url). The provider then renders OUR
+  // cues on its own video timeline — relay-chain latency disappears, the
+  // English default track never surfaces, and captions live inside the video
+  // so they survive every fullscreen mode. The 60fps overlay stays as the
+  // fallback path (servers without injection / no cached track yet).
+  const supportsNativeSubs = server.nativeSubs === true;
+  const [nativeSubReady, setNativeSubReady] = useState<boolean | null>(
+    supportsNativeSubs ? null : false
+  );
+  const nativeProbeEpoch = useRef(0);
+  useEffect(() => {
+    const epoch = ++nativeProbeEpoch.current;
+    void (async () => {
+      await Promise.resolve(); // microtask — effect body stays setState-free
+      if (nativeProbeEpoch.current !== epoch) return;
+      if (!supportsNativeSubs) {
+        setNativeSubReady(false);
+        return;
+      }
+      setNativeSubReady(null);
+      try {
+        const qs = new URLSearchParams({ type, id: imdbId, lang: "ar" });
+        if (type === "series" && season) qs.set("season", String(season));
+        if (type === "series" && episode) qs.set("episode", String(episode));
+        const res = await fetch(`/api/subs/available?${qs}`);
+        const data = (await res.json()) as { exists?: boolean };
+        if (nativeProbeEpoch.current !== epoch) return;
+        setNativeSubReady(!!data.exists);
+      } catch {
+        if (nativeProbeEpoch.current !== epoch) return;
+        setNativeSubReady(false);
+      }
+    })();
+    return () => {
+      nativeProbeEpoch.current += 1;
+    };
+  }, [supportsNativeSubs, type, imdbId, season, episode]);
+
+  // absolute https URL required — the PROVIDER iframe fetches it from the
+  // viewer's browser, so a relative path would resolve against their origin
+  const subFileUrl = nativeSubReady
+    ? `${window.location.origin}/api/subs/file?${new URLSearchParams({
+        type,
+        id: imdbId,
+        lang: "ar",
+        ...(type === "series" && season ? { season: String(season) } : {}),
+        ...(type === "series" && episode ? { episode: String(episode) } : {}),
+      }).toString()}`
+    : null;
+  // src stays "" (about:blank behind the loading veil) until the availability
+  // probe lands — one navigation, no reload flicker.
+  const src =
+    nativeSubReady === null
+      ? ""
+      : server.build(type, imdbId, season, episode, {
+          subUrl: subFileUrl ?? undefined,
+        });
+
+  // ── AR-only policy (user requirement) ──
+  // Playback ALWAYS starts with Arabic subtitles on: an English/OFF selection
+  // left over from an earlier session is overridden the moment the player
+  // mounts (the player remounts per episode, so every episode gets AR).
+  useEffect(() => {
+    const s = useSettings.getState();
+    if (s.subLang !== "ar") s.setSubLang("ar");
+  }, []);
 
   const fullTitle =
     type === "series" && season && episode
@@ -382,18 +450,55 @@ export function StreamPlayer({
   };
 
   // ── True fullscreen control ──
+  // requestFullscreen runs SYNCHRONOUSLY inside the click (transient user
+  // activation) and falls back through: webkit API → one delayed retry →
+  // CSS stage (fakeFs). The CSS stage guarantees a fullscreen-like view even
+  // when the UA denies the API outright (permission policies, sandboxed
+  // embedders, iOS Safari) — the user ALWAYS lands fullscreen.
   const enterFullscreen = useCallback(() => {
-    const el = stageRef.current;
-    if (!el) return;
-    const webkitReq = (el as HTMLDivElement & { webkitRequestFullscreen?: () => Promise<void> })
-      .webkitRequestFullscreen;
-    const req = el.requestFullscreen?.bind(el) ?? webkitReq?.bind(el);
-    if (req) {
-      req().catch(() => setFakeFs(true));
-    } else {
-      setFakeFs(true); // iOS Safari: element fullscreen unsupported → CSS stage
+    const stage = stageRef.current;
+    if (!stage) return;
+    if (document.fullscreenElement === stage) return;
+    const stageAny = stage as HTMLDivElement & {
+      webkitRequestFullscreen?: () => Promise<void> | void;
+    };
+    const hasApi =
+      typeof stage.requestFullscreen === "function" ||
+      typeof stageAny.webkitRequestFullscreen === "function";
+    if (!hasApi) {
+      setFakeFs(true); // element fullscreen unsupported → CSS stage
+      return;
     }
-  }, []);
+    const req = (): Promise<void> | void =>
+      typeof stage.requestFullscreen === "function"
+        ? stage.requestFullscreen({ navigationUI: "hide" })
+        : stageAny.webkitRequestFullscreen?.();
+    try {
+      const p = req();
+      if (p && typeof (p as Promise<void>).catch === "function") {
+        (p as Promise<void>).catch(() => {
+          // denied — one beat later, one retry; then the CSS stage so the
+          // promise of a fullscreen view is always kept
+          setTimeout(() => {
+            if (document.fullscreenElement === stage) return;
+            try {
+              const p2 = req();
+              if (p2 && typeof (p2 as Promise<void>).catch === "function") {
+                (p2 as Promise<void>).catch(() => {
+                  setFakeFs(true);
+                  toast({ title: t("fullscreen"), description: t("fullscreenFallback") });
+                });
+              }
+            } catch {
+              setFakeFs(true);
+            }
+          }, 150);
+        });
+      }
+    } catch {
+      setFakeFs(true);
+    }
+  }, [t]);
 
   const exitFullscreen = useCallback(() => {
     setFakeFs(false);
@@ -410,48 +515,71 @@ export function StreamPlayer({
 
   // fullscreen tracking + provider-steal: if the provider iframe grabs
   // fullscreen (its own ⛶ button), swap it for our stage so the subtitle
-  // overlay — a sibling of the iframe — stays in the picture. Works while
-  // the document is fullscreen without a fresh user gesture; hard-fallback
-  // is a CSS stage.
+  // overlay — a sibling of the iframe — stays in the picture. While the
+  // document is already fullscreen, switching the fullscreen element to our
+  // stage needs NO fresh user gesture (nested switch); retries absorb
+  // transient denials, and a final exit leaves our page in front. A request
+  // rejected at UA level (fullscreenerror) flips to the CSS stage.
   useEffect(() => {
     const onFsChange = () => {
-      const fe = document.fullscreenElement;
+      const doc = document as Document & { webkitFullscreenElement?: Element | null };
+      const fe = document.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
       setRealFs(!!fe && fe === stageRef.current);
-      if (fe && fe === playerFrameRef.current && stageRef.current) {
+      if (fe && fe !== stageRef.current && stageRef.current) {
         const stage = stageRef.current;
-        void (async () => {
+        let tries = 0;
+        const steal = () => {
+          tries += 1;
+          if (document.fullscreenElement === stage) return;
           try {
-            await stage.requestFullscreen();
+            const p = stage.requestFullscreen({ navigationUI: "hide" });
+            if (p && typeof p.catch === "function") {
+              p.catch(() => {
+                if (tries < 4) {
+                  setTimeout(steal, 160);
+                } else if (
+                  document.fullscreenElement &&
+                  document.fullscreenElement !== stage
+                ) {
+                  // can't win the top layer — leave it so our ⛶ controls are
+                  // back in front and the user can re-enter at stage level
+                  document.exitFullscreen?.().catch(() => {});
+                }
+              });
+            }
           } catch {
-            try {
-              await document.exitFullscreen();
-            } catch {
-              /* already out */
-            }
-            try {
-              await stage.requestFullscreen();
-            } catch {
-              /* gesture-policy denied — clean exit below */
-            }
-          }
-          // if the steal didn't take (browser gesture policy), leave the
-          // provider's fullscreen entirely — our ⛶ button re-enters at stage
-          // level, where subtitles live
-          setTimeout(() => {
-            if (document.fullscreenElement === playerFrameRef.current) {
+            if (document.fullscreenElement && document.fullscreenElement !== stage) {
               document.exitFullscreen?.().catch(() => {});
             }
-          }, 400);
-        })();
+          }
+        };
+        steal();
       }
+    };
+    const onFsError = () => {
+      // request rejected at UA level → CSS stage keeps the fullscreen promise
+      setFakeFs(true);
     };
     document.addEventListener("fullscreenchange", onFsChange);
     document.addEventListener("webkitfullscreenchange", onFsChange);
+    document.addEventListener("fullscreenerror", onFsError);
     return () => {
       document.removeEventListener("fullscreenchange", onFsChange);
       document.removeEventListener("webkitfullscreenchange", onFsChange);
+      document.removeEventListener("fullscreenerror", onFsError);
     };
   }, []);
+
+  // fake fullscreen must escape the page wrapper's `isolate` stacking context
+  // (see [data-fs-stage] in globals.css) so the CSS stage rises above the
+  // fixed navbar instead of hiding behind it
+  useEffect(() => {
+    if (!fakeFs) return;
+    document.documentElement.dataset.fsStage = "1";
+    return () => {
+      delete document.documentElement.dataset.fsStage;
+    };
+  }, [fakeFs]);
 
   // keyboard: F = fullscreen · [ = subs later · ] = subs earlier
   useEffect(() => {
@@ -466,6 +594,8 @@ export function StreamPlayer({
       if (e.key === "f" || e.key === "F") {
         e.preventDefault();
         toggleFullscreen();
+      } else if (e.key === "Escape" && fakeFs) {
+        setFakeFs(false); // CSS stage exits with Esc like a real fullscreen
       } else if (e.key === "[") {
         const v = nudgeOffset(-0.1);
         toast({
@@ -486,6 +616,10 @@ export function StreamPlayer({
 
   const cueCount = (localCues ?? cues).length;
   const showSubs = subLang !== "off" && subStatus === "loaded";
+  // when the provider renders our Arabic track natively (sub_url injection),
+  // the sibling overlay must stay silent — otherwise every line shows twice
+  const providerNativeSubs = supportsNativeSubs && nativeSubReady === true;
+  const overlayVisible = showSubs && !providerNativeSubs;
   const translatingAr = subLang === "ar" && subStatus === "loading";
   const progressPct =
     sync.duration > 0 ? Math.min(100, (sync.currentTime / sync.duration) * 100) : 0;
@@ -520,7 +654,7 @@ export function StreamPlayer({
         ref={stageRef}
         className={cn(
           "relative aspect-video w-full overflow-hidden border-y border-border/60 bg-black sm:rounded-2xl sm:border",
-          fakeFs && "fixed inset-0 z-[90] aspect-auto h-[100dvh] w-screen"
+          fakeFs && "fixed inset-0 z-[9999] aspect-auto h-[100dvh] w-screen"
         )}
         // inline style beats the sm: variants (Tailwind cascade) so the
         // fullscreen stage is edge-to-edge: no rounded corners, no border
@@ -528,7 +662,7 @@ export function StreamPlayer({
       >
         <iframe
           key={frameToken}
-          src={src}
+          src={src || "about:blank"}
           title={fullTitle}
           ref={playerFrameRef}
           className="absolute inset-0 h-full w-full"
@@ -623,7 +757,7 @@ export function StreamPlayer({
           offset={effectiveOffset + SUBTITLE_LEAD_S}
           sizePx={subSize}
           style={subStyle}
-          visible={showSubs}
+          visible={overlayVisible}
           scale={fsActive ? 1.4 : 1}
         />
       </div>
@@ -680,6 +814,35 @@ export function StreamPlayer({
 
           <div className="flex items-center gap-2">
             {syncChip}
+
+            {/* provider renders our Arabic track natively (sub_url inject) */}
+            {providerNativeSubs && (
+              <span
+                className="flex min-h-[36px] items-center gap-1.5 rounded-full border border-primary/50 bg-primary/10 px-3 py-1.5 text-xs font-bold text-primary"
+                title={t("nativeSubs")}
+                role="status"
+              >
+                <Languages className="h-3.5 w-3.5" aria-hidden />
+                <span className="hidden sm:inline">{t("nativeSubs")}</span>
+              </span>
+            )}
+
+            {/* fullscreen — labeled, always one tap away (key: F) */}
+            <button
+              onClick={toggleFullscreen}
+              className="flex min-h-[36px] items-center gap-1.5 rounded-full border border-border/70 bg-card/60 px-3 py-1.5 text-xs font-bold text-muted-foreground transition-all hover:border-primary/40 hover:text-foreground"
+              title={fsActive ? t("exitFullscreen") : t("fullscreen")}
+              aria-label={fsActive ? t("exitFullscreen") : t("fullscreen")}
+            >
+              {fsActive ? (
+                <Minimize2 className="h-4 w-4" aria-hidden />
+              ) : (
+                <Maximize2 className="h-4 w-4" aria-hidden />
+              )}
+              <span className="hidden sm:inline">
+                {fsActive ? t("exitFullscreen") : t("fullscreen")}
+              </span>
+            </button>
 
             {/* manual subtitle clock (servers without telemetry) */}
             {!sync.providerDriven && showSubs && (

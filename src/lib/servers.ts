@@ -1,4 +1,4 @@
-import type { MediaType, ServerDef } from "@/types";
+import type { MediaType, ServerBuildOpts, ServerDef } from "@/types";
 
 // ─── Senku-frameXTV · Multi-server fallback registry ────────────────────────
 // All providers are keyed on IMDb IDs (tt…).
@@ -11,6 +11,26 @@ import type { MediaType, ServerDef } from "@/types";
 //    "Please Disable Sandbox" screen (its own PDF-plugin probe — nothing to
 //    do with our iframe). So frameXTV ships LAST as a manual fallback only.
 
+// ── Provider-native subtitle steering (official docs: vidsrc.sh/vidsrc/docs,
+//    superembed.stream) ──────────────────────────────────────────────────────
+//  ds_lang=ar → the provider's auto-selected default track prefers ARABIC.
+//  With no Arabic source available the player starts with NO default track
+//  instead of falling back to English — English never surfaces on its own.
+//  sub_url    → our cached Arabic WebVTT, fetched by the viewer's browser and
+//  auto-applied by the provider: our cues are rendered on the provider's own
+//  video timeline (frame-exact against the audio, zero relay latency) and
+//  they live INSIDE the video, so every fullscreen mode keeps them visible.
+function withSubParams(base: string, opts?: ServerBuildOpts, autoplay = true): string {
+  const q: string[] = ["ds_lang=ar"];
+  if (autoplay) q.push("autoplay=1");
+  if (opts?.subUrl) {
+    q.push(`sub_url=${encodeURIComponent(opts.subUrl)}`);
+    q.push(`sub_label=${encodeURIComponent("العربية")}`);
+    q.push("sub_lang=ar");
+  }
+  return `${base}?${q.join("&")}`;
+}
+
 export const SERVERS: ServerDef[] = [
   {
     // vidsrc.sh is the actual relay/player host (the vidsrc.to shell just
@@ -22,30 +42,47 @@ export const SERVERS: ServerDef[] = [
     name: "VidSrc",
     tag: "Alpha",
     quality: "1080p",
-    build: (type, imdbId, season, episode) =>
+    nativeSubs: true,
+    build: (type, imdbId, season, episode, opts) =>
       type === "movie"
-        ? `https://vidsrc.sh/embed/movie/${imdbId}`
-        : `https://vidsrc.sh/embed/tv/${imdbId}/${season ?? 1}-${episode ?? 1}`,
+        ? withSubParams(`https://vidsrc.sh/embed/movie/${imdbId}`, opts)
+        : withSubParams(
+            `https://vidsrc.sh/embed/tv/${imdbId}/${season ?? 1}-${episode ?? 1}`,
+            opts
+          ),
   },
   {
     id: "vidsrc-icu",
     name: "VidSrc",
     tag: "Beta",
     quality: "1080p",
-    build: (type, imdbId, season, episode) =>
+    nativeSubs: true,
+    build: (type, imdbId, season, episode, opts) =>
       type === "movie"
-        ? `https://vidsrc.icu/embed/movie/${imdbId}`
-        : `https://vidsrc.icu/embed/tv/${imdbId}/${season ?? 1}/${episode ?? 1}`,
+        ? withSubParams(`https://vidsrc.icu/embed/movie/${imdbId}`, opts)
+        : withSubParams(
+            `https://vidsrc.icu/embed/tv/${imdbId}/${season ?? 1}/${episode ?? 1}`,
+            opts
+          ),
   },
   {
     id: "multiembed",
     name: "SuperEmbed",
     tag: "Multi",
     quality: "Multi-Qual",
-    build: (type, imdbId, season, episode) =>
-      type === "movie"
-        ? `https://multiembed.mov/?video_id=${imdbId}`
-        : `https://multiembed.mov/?video_id=${imdbId}&s=${season ?? 1}&e=${episode ?? 1}`,
+    nativeSubs: true,
+    build: (type, imdbId, season, episode, opts) => {
+      const base =
+        type === "movie"
+          ? `https://multiembed.mov/?video_id=${imdbId}`
+          : `https://multiembed.mov/?video_id=${imdbId}&s=${season ?? 1}&e=${episode ?? 1}`;
+      // SuperEmbed: "&sub_url and &sub_label — your subtitles appear first
+      // in list and autoplay" (no ds_lang support → nothing else injected).
+      if (opts?.subUrl) {
+        return `${base}&sub_url=${encodeURIComponent(opts.subUrl)}&sub_label=${encodeURIComponent("العربية")}`;
+      }
+      return base;
+    },
   },
   {
     id: "twoembed",

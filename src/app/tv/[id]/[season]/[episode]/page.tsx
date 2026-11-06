@@ -83,7 +83,10 @@ export default async function EpisodePage({ params }: Props) {
     : null;
 
   return (
-    <div className="relative isolate mx-auto max-w-[1600px] space-y-6 px-0 pb-10 sm:px-6 lg:px-10">
+    <div className="senku-page-root relative isolate mx-auto max-w-[1600px] space-y-6 px-0 pb-10 sm:px-6 lg:px-10">
+      {/* `isolate` keeps the ambient glow contained; the player's CSS
+          fullscreen fallback lifts it via [data-fs-stage] (globals.css) so
+          the fake-fullscreen stage can rise above the fixed navbar. */}
       {/* ambient cinema glow — poster light bleeding behind the stage */}
       {meta.poster && (
         <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[520px] overflow-hidden">
