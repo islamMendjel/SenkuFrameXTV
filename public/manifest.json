@@ -1,0 +1,47 @@
+{
+  "id": "senku-framextv",
+  "name": "Senku-frameXTV",
+  "short_name": "SenkuXTV",
+  "description": "Cinematic streaming with Arabic-first subtitles and multi-server failover. Install for a native Android experience.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#09090b",
+  "theme_color": "#10b981",
+  "lang": "en",
+  "dir": "auto",
+  "categories": ["entertainment", "video"],
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Search",
+      "url": "/search",
+      "description": "Search movies & series"
+    },
+    {
+      "name": "Watchlist",
+      "url": "/watchlist",
+      "description": "Your saved titles"
+    }
+  ]
+}
