@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import { SubtitleOverlay } from "./SubtitleOverlay";
 import { ServerSwitcher } from "./ServerSwitcher";
 import { SubtitleSettingsModal } from "./SubtitleSettingsModal";
-import { AlertTriangle, Captions, MonitorPlay, RefreshCw, Timer } from "lucide-react";
+import { AlertTriangle, Captions, ExternalLink, MonitorPlay, RefreshCw, Timer } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 
 // ─── StreamPlayer · multi-server iframe player w/ subtitle engine ────────────
@@ -28,8 +28,9 @@ interface Props {
 
 type SubStatus = "idle" | "loading" | "loaded" | "none";
 
-const IFRAME_SANDBOX =
-  "allow-scripts allow-same-origin allow-forms allow-presentation allow-modals";
+// NOTE: no `sandbox` attribute on player iframes — VidSrc-family providers
+// detect sandboxed frames and refuse to play ("Please Disable Sandbox").
+// We keep the frame locked down via `allow` permissions instead.
 
 export function StreamPlayer({
   type,
@@ -279,6 +280,11 @@ export function StreamPlayer({
     resetPlaybackState();
   };
 
+  // last-resort escape hatch: provider pages always play in a top-level tab
+  const openDirect = () => {
+    window.open(src, "_blank", "noopener");
+  };
+
   const cueCount = cues.length;
 
   return (
@@ -290,7 +296,6 @@ export function StreamPlayer({
           src={src}
           title={fullTitle}
           className="absolute inset-0 h-full w-full"
-          sandbox={IFRAME_SANDBOX}
           referrerPolicy="origin"
           allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
           allowFullScreen
@@ -332,6 +337,13 @@ export function StreamPlayer({
                 className="min-h-[40px] rounded-full bg-primary px-5 py-2 text-xs font-black text-black transition-transform active:scale-95"
               >
                 {t("switchServer")} →
+              </button>
+              <button
+                onClick={openDirect}
+                className="flex min-h-[40px] items-center gap-1.5 rounded-full border border-white/25 px-5 py-2 text-xs font-bold text-zinc-300 transition-colors hover:text-white"
+              >
+                <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+                {t("openDirect")}
               </button>
               <button
                 onClick={() => setOverlayDismissed(true)}
@@ -395,6 +407,15 @@ export function StreamPlayer({
                   {subLang}
                 </span>
               )}
+            </button>
+
+            <button
+              onClick={openDirect}
+              className="flex min-h-[36px] items-center gap-1.5 rounded-full border border-border/70 bg-card/60 px-3 py-1.5 text-xs font-bold text-muted-foreground transition-all hover:border-primary/40 hover:text-foreground"
+              title={t("openDirect")}
+            >
+              <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+              <span className="hidden sm:inline">{t("openDirect")}</span>
             </button>
 
             <button

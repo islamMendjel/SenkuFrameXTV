@@ -62,8 +62,18 @@ export const SERVERS: ServerDef[] = [
     quality: "720p+",
     build: (type, imdbId, season, episode) =>
       type === "movie"
-        ? `https://2embed.cc/embed/${imdbId}`
-        : `https://2embed.cc/embedtv/${imdbId}&s=${season ?? 1}&e=${episode ?? 1}`,
+        ? `https://www.2embed.cc/embed/${imdbId}`
+        : `https://www.2embed.cc/embedtv/${imdbId}&s=${season ?? 1}&e=${episode ?? 1}`,
+  },
+  {
+    id: "vidlink",
+    name: "VidLink",
+    tag: "Nova",
+    quality: "1080p",
+    build: (type, imdbId, season, episode) =>
+      type === "movie"
+        ? `https://vidlink.pro/movie/${imdbId}`
+        : `https://vidlink.pro/tv/${imdbId}/${season ?? 1}/${episode ?? 1}`,
   },
 ];
 
