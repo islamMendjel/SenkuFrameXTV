@@ -4,6 +4,7 @@ import { ThemeProvider } from "next-themes";
 import { useEffect } from "react";
 import { useSettings } from "@/lib/store";
 import { Toaster } from "@/components/ui/toaster";
+import { CommandPalette } from "@/components/CommandPalette";
 
 // ─── Providers · dark-by-default theme + bilingual dir switching + SW ────────
 
@@ -92,6 +93,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
       themes={["dark", "light"]}
     >
       {children}
+      {/* global ⌘K command palette — instant search + actions on every page */}
+      <CommandPalette />
       <Toaster />
     </ThemeProvider>
   );

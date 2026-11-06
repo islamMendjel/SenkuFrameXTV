@@ -16,6 +16,7 @@ import {
   AlertTriangle,
   Captions,
   ExternalLink,
+  Languages,
   MonitorPlay,
   Pause,
   Play,
@@ -45,7 +46,7 @@ interface Props {
   nextEpisode?: NextEpisodeInfo;
 }
 
-type SubStatus = "idle" | "loading" | "loaded" | "none";
+type SubStatus = "idle" | "loading" | "interim" | "loaded" | "none";
 
 // NOTE: no `sandbox` attribute on player iframes — VidSrc-family providers
 // detect sandboxed frames and refuse to play ("Please Disable Sandbox").
@@ -92,6 +93,7 @@ export function StreamPlayer({
   // ── subtitle engine state ──
   const [cues, setCues] = useState<SubtitleCue[]>([]);
   const [subStatus, setSubStatus] = useState<SubStatus>("idle");
+  const [subProgress, setSubProgress] = useState<number | null>(null);
   const [loadedLang, setLoadedLang] = useState<"ar" | "en" | null>(null);
   const [localCues, setLocalCues] = useState<SubtitleCue[] | null>(null);
   const localCuesRef = useRef<SubtitleCue[] | null>(null);
@@ -160,6 +162,9 @@ export function StreamPlayer({
     let cancelled = false;
     let pollT: ReturnType<typeof setTimeout> | null = null;
     const loadingT = setTimeout(() => !cancelled && setSubStatus("loading"), 0);
+    // toast only when real work happened (translation/polling or manual refetch);
+    // instantly-cached tracks load silently — no notification noise per page view
+    let sawWork = subFetchNonce > 0;
     (async () => {
       for (let attempt = 0; attempt < 48 && !cancelled; attempt++) {
         try {
@@ -172,10 +177,20 @@ export function StreamPlayer({
             count?: number;
             pending?: boolean;
             progress?: number;
+            interim?: boolean;
           };
           if (cancelled) return;
           if (data.pending) {
-            setSubStatus("loading");
+            sawWork = true;
+            setSubProgress(typeof data.progress === "number" ? data.progress : null);
+            // English interim track: captions NOW while Arabic AI cooks
+            if (data.interim && Array.isArray(data.cues) && data.cues.length > 0 && !localCuesRef.current) {
+              setCues(data.cues);
+              setSubStatus("interim");
+              setLoadedLang("en");
+            } else {
+              setSubStatus((s) => (s === "interim" ? s : "loading"));
+            }
             await new Promise<void>((r) => {
               pollT = setTimeout(r, 5000);
             });
@@ -185,17 +200,20 @@ export function StreamPlayer({
           if (got.length > 0) {
             if (!localCuesRef.current) setCues(got);
             setSubStatus("loaded");
+            setSubProgress(null);
             setLoadedLang(subLang);
-            toast({
-              title: subLang === "ar" ? t("subsLoaded") : t("subsLoadedEn"),
-              description: `${got.length.toLocaleString()} cues · ${t("appName")}`,
-            });
+            if (sawWork) {
+              toast({
+                title: subLang === "ar" ? t("subsLoaded") : t("subsLoadedEn"),
+                description: `${got.length.toLocaleString()} cues · ${t("appName")}`,
+              });
+            }
           } else {
-            setSubStatus("none");
+            setSubStatus((s) => (s === "interim" ? "interim" : "none"));
           }
           return;
         } catch {
-          if (!cancelled) setSubStatus("none");
+          if (!cancelled) setSubStatus((s) => (s === "interim" ? "interim" : "none"));
           return;
         }
       }
@@ -317,7 +335,9 @@ export function StreamPlayer({
   };
 
   const cueCount = (localCues ?? cues).length;
-  const showSubs = subLang !== "off" && subStatus === "loaded";
+  const showSubs =
+    subLang !== "off" && (subStatus === "loaded" || subStatus === "interim");
+  const translatingAr = subLang === "ar" && subStatus === "interim";
   const progressPct =
     sync.duration > 0 ? Math.min(100, (sync.currentTime / sync.duration) * 100) : 0;
 
@@ -500,6 +520,23 @@ export function StreamPlayer({
                 <Timer className="h-3.5 w-3.5" aria-hidden />
                 {sync.manualMode ? t("syncRunning") : `▶ ${t("startSync")}`}
               </button>
+            )}
+
+            {/* live AI-translation progress (English interim → Arabic hot-swap) */}
+            {translatingAr && (
+              <span
+                className="flex min-h-[36px] items-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-bold text-primary"
+                title={t("arTranslating")}
+                role="status"
+              >
+                <Languages className="h-3.5 w-3.5 animate-pulse-glow" aria-hidden />
+                {t("arTranslating")}
+                {subProgress != null && (
+                  <span className="font-mono tabular-nums">
+                    {Math.min(99, Math.round(subProgress * 100))}%
+                  </span>
+                )}
+              </span>
             )}
 
             {/* subtitle status + settings */}

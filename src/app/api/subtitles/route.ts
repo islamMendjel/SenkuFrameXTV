@@ -14,8 +14,11 @@ import type { SubtitleCue, SubtitleTrackInfo } from "@/types";
 //   3. SubtitleCat release-matched English srt:
 //        lang=en → parse directly
 //        lang=ar → LLM batch-translation in a background job
-//                  (client polls: { pending: true, progress })
-// Response: { lang, count, cues, source } or { pending: true, progress }
+//                  (client polls: { pending: true, progress, cues? })
+//                  → pending polls also carry the synced ENGLISH cues as an
+//                    interim track, so viewers read captions while the Arabic
+//                    translation cooks; final AR cues hot-swap in.
+// Response: { lang, count, cues, source } | { pending, progress, cues? }
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -50,6 +53,8 @@ interface SubJob {
   status: "running" | "done" | "error";
   progress: number; // 0..1
   startedAt: number;
+  /** synced English cues served while the Arabic translation runs */
+  interimCues?: SubtitleCue[];
 }
 declare global {
   // module-scope Map shared across HMR rebuilds (survives route re-eval)
@@ -59,6 +64,11 @@ const jobs: Map<string, SubJob> =
   (globalThis.__senkuSubJobs as Map<string, SubJob>) ??
   (globalThis.__senkuSubJobs = new Map<string, SubJob>());
 
+// Translation-engine version — bump to invalidate stale AI translations.
+// t2 → v2 repair engine (no more English leftovers). Only applies to the
+// AI-translated 'ar' lane; human EN tracks are release-matched, not generated.
+const AR_TRANSLATION_VERSION = "t4";
+
 function buildKey(
   type: string,
   imdbId: string,
@@ -66,7 +76,8 @@ function buildKey(
   season?: number,
   episode?: number
 ): string {
-  return `${imdbId}:${type}:${lang}:${season ?? 0}:${episode ?? 0}`;
+  const langTag = lang === "ar" ? `ar@${AR_TRANSLATION_VERSION}` : "en";
+  return `${imdbId}:${type}:${langTag}:${season ?? 0}:${episode ?? 0}`;
 }
 
 // ── source 1: official OpenSubtitles API (needs env key) ──
@@ -320,10 +331,17 @@ export async function GET(req: NextRequest) {
   const hit = memCache.get(cacheKey);
   if (hit && hit.exp > Date.now()) return NextResponse.json(hit.payload);
 
-  // 0b. running translation job → report progress
+  // 0b. running translation job → report progress (+ interim English cues)
   const job = jobs.get(cacheKey);
   if (job && job.status === "running") {
-    return NextResponse.json({ pending: true, progress: job.progress, lang });
+    return NextResponse.json({
+      pending: true,
+      progress: job.progress,
+      lang,
+      interim: job.interimCues ? true : undefined,
+      cues: job.interimCues,
+      count: job.interimCues?.length,
+    });
   }
 
   // 0c. DB
@@ -380,8 +398,15 @@ export async function GET(req: NextRequest) {
         writeDb(cacheKey, lang, scBase.cues, `subtitlecat:${scBase.release}`);
         return NextResponse.json(payload);
       }
-      // Arabic → launch background AI translation, report pending
-      const running: SubJob = { status: "running", progress: 0, startedAt: Date.now() };
+      // Arabic → launch background AI translation, report pending.
+      // Carry the synced English cues on every poll so the viewer has
+      // captions NOW; the finished Arabic track hot-swaps in when ready.
+      const running: SubJob = {
+        status: "running",
+        progress: 0,
+        startedAt: Date.now(),
+        interimCues: scBase.cues,
+      };
       jobs.set(cacheKey, running);
       void runTranslationJob(cacheKey, metaName, type, imdbId, season, episode).finally(() => {
         // auto-clean finished/errored jobs after 10 min
@@ -390,7 +415,14 @@ export async function GET(req: NextRequest) {
           if (j && j.status !== "running") jobs.delete(cacheKey);
         }, 600_000);
       });
-      return NextResponse.json({ pending: true, progress: 0, lang });
+      return NextResponse.json({
+        pending: true,
+        progress: 0,
+        lang,
+        interim: true,
+        cues: scBase.cues,
+        count: scBase.cues.length,
+      });
     }
   }
 

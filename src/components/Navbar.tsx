@@ -10,7 +10,7 @@ import { useT } from "@/hooks/useT";
 import { usePWAInstall } from "@/hooks/usePWAInstall";
 import { useDebounce } from "@/hooks/useDebounce";
 import { cn } from "@/lib/utils";
-import { Bookmark, Download, Languages, Moon, Search, Sun } from "lucide-react";
+import { Bookmark, Command, Download, Languages, Moon, Search, Sun } from "lucide-react";
 // ─── Navbar · glass cinematic header, bilingual + theme toggles ──────────────
 
 export function Navbar() {
@@ -22,7 +22,6 @@ export function Navbar() {
   const { theme, setTheme } = useTheme();
   const { canInstall, install } = usePWAInstall();
   const t = useT();
-
   const [scrolled, setScrolled] = useState(false);
   const [query, setQuery] = useState("");
   const debounced = useDebounce(query, 450);
@@ -71,7 +70,7 @@ export function Navbar() {
           </span>
         </Link>
 
-        {/* desktop search */}
+        {/* desktop search — clicking the ⌘K chip opens the command palette */}
         <div className="relative ms-2 hidden flex-1 max-w-md md:block">
           <Search className="pointer-events-none absolute start-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
           <input
@@ -80,9 +79,20 @@ export function Navbar() {
             onChange={(e) => setQuery(e.target.value)}
             placeholder={t("searchPlaceholder")}
             aria-label={t("search")}
-            className="h-10 w-full rounded-full border border-border/60 bg-card/60 ps-10 pe-4 text-sm outline-none backdrop-blur-md transition-all placeholder:text-muted-foreground/70 focus:border-primary/60 focus:bg-card focus:ring-2 focus:ring-primary/30"
+            className="h-10 w-full rounded-full border border-border/60 bg-card/60 ps-10 pe-14 text-sm outline-none backdrop-blur-md transition-all placeholder:text-muted-foreground/70 focus:border-primary/60 focus:bg-card focus:ring-2 focus:ring-primary/30"
           />
-        </div>
+        {/* global ⌘K palette is mounted once in Providers; the chip signals it */}
+        <button
+          type="button"
+          onClick={() => window.dispatchEvent(new CustomEvent("senku:cmdk"))}
+          aria-label={t("cmdOpen")}
+          title={t("cmdOpen")}
+          className="absolute end-1.5 top-1/2 flex h-7 -translate-y-1/2 items-center gap-1 rounded-full border border-border/70 bg-muted/60 px-2 font-mono text-[10px] font-bold text-muted-foreground transition-colors hover:border-primary/50 hover:text-primary"
+        >
+          <Command className="h-3 w-3" aria-hidden />
+          K
+        </button>
+      </div>
 
         <div className="flex-1 md:hidden" />
 
