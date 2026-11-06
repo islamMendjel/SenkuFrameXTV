@@ -12,16 +12,15 @@ import type { MediaType, ServerBuildOpts, ServerDef } from "@/types";
 //    do with our iframe). So frameXTV ships LAST as a manual fallback only.
 
 // ── Provider-native subtitle steering (official docs: vidsrc.sh/vidsrc/docs,
-//    superembed.stream) ──────────────────────────────────────────────────────
-//  ds_lang=ar → the provider's auto-selected default track prefers ARABIC.
-//  With no Arabic source available the player starts with NO default track
-//  instead of falling back to English — English never surfaces on its own.
-//  sub_url    → our cached Arabic WebVTT, fetched by the viewer's browser and
-//  auto-applied by the provider: our cues are rendered on the provider's own
-//  video timeline (frame-exact against the audio, zero relay latency) and
-//  they live INSIDE the video, so every fullscreen mode keeps them visible.
+//    superembed.stream) ─────────────────────────────────────────────────────
+//  ds_lang    → the provider's auto-selected default track language. ARABIC
+//  is kept as the probe when the viewer picked Arabic or OFF (with no Arabic
+//  source the player starts with NO track instead of falling back to English
+//  — English never surfaces uninvited); an explicit English pick gets EN.
+//  sub_url    → our cached Arabic WebVTT — ONLY injected when the user has
+//  Arabic enabled (subtitles are user-opt-in, never auto-forced).
 function withSubParams(base: string, opts?: ServerBuildOpts, autoplay = true): string {
-  const q: string[] = ["ds_lang=ar"];
+  const q: string[] = [`ds_lang=${opts?.subLang === "en" ? "en" : "ar"}`];
   if (autoplay) q.push("autoplay=1");
   if (opts?.subUrl) {
     q.push(`sub_url=${encodeURIComponent(opts.subUrl)}`);
@@ -96,8 +95,8 @@ export const SERVERS: ServerDef[] = [
     tag: "Reserve",
     quality: "720p+",
     // 2embed is a SuperEmbed mirror → same &sub_url/&sub_label protocol as
-    // multiembed: our cached Arabic track autoplays, the provider's English
-    // default track never surfaces (AR-only policy, user requirement).
+    // multiembed: when the viewer enables Arabic, our cached track autoplays
+    // with native sync; with subs off nothing is injected.
     nativeSubs: true,
     build: (type, imdbId, season, episode, opts) => {
       const sub = opts?.subUrl

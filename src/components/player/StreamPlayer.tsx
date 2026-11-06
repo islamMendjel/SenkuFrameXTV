@@ -135,6 +135,27 @@ export function StreamPlayer({
   const [fakeFs, setFakeFs] = useState(false);
   const fsActive = realFs || fakeFs;
 
+  // ── fullscreen HUD ──
+  // In stage fullscreen the control deck is out of reach (it lives outside
+  // the fullscreen element), so a slim top HUD carries the essentials:
+  // title, live clock, story-style progress hairline, play/pause and a CC
+  // quick toggle. It fades like a native player while playing and returns
+  // the instant playback pauses.
+  const [hudOn, setHudOn] = useState(true);
+
+  // ── Mobile Cinema Dock ──
+  // Phones-first (the bold move): once the viewer scrolls past the player,
+  // the stage docks pinned under the status bar and the page — episodes,
+  // servers, details — flows beneath it. Playback never pauses and the
+  // iframe never remounts (pure CSS repositioning), while a story-style
+  // hairline keeps progress alive on the dock's bottom edge. Desktop (≥lg)
+  // keeps the classic layout untouched.
+  const dockSlotRef = useRef<HTMLDivElement | null>(null);
+  const [docked, setDocked] = useState(false);
+  const dockedRef = useRef(false);
+  const slotHRef = useRef(0);
+  const dockedActive = docked && !fsActive;
+
   // ── per-episode sync memory ──
   // Every episode is a different rip with its own timing personality — a
   // +0.3s fix on S8E21 must not poison S8E22. The player remounts per
@@ -196,27 +217,36 @@ export function StreamPlayer({
   const server = getServer(serverId);
 
   // ── Provider-native Arabic track (VidSrc ds_lang/sub_url injection) ──
-  // When a cached Arabic track exists, it is handed to the provider as an
-  // auto-applied external subtitle (sub_url). The provider then renders OUR
-  // cues on its own video timeline — relay-chain latency disappears, the
-  // English default track never surfaces, and captions live inside the video
-  // so they survive every fullscreen mode. The 60fps overlay stays as the
-  // fallback path (servers without injection / no cached track yet).
+  // When the VIEWER has Arabic enabled and a cached track exists, it is
+  // handed to the provider as an auto-applied external subtitle (sub_url).
+  // The provider then renders OUR cues on its own video timeline —
+  // relay-chain latency disappears, the English default track never
+  // surfaces, and captions live inside the video so they survive every
+  // fullscreen mode. The 60fps overlay stays as the fallback path (servers
+  // without injection / no cached track yet). With subtitles off (the new
+  // default) nothing is probed or injected — captions only exist by choice.
   const supportsNativeSubs = server.nativeSubs === true;
-  const [nativeSubReady, setNativeSubReady] = useState<boolean | null>(
-    supportsNativeSubs ? null : false
-  );
+  const [nativeSubReady, setNativeSubReady] = useState(false);
+  // veil-blank while probing a FRESH stage (first load / server switch) so
+  // the embed builds exactly once; a mid-session language toggle probes in
+  // the background and never blanks the current frame.
+  const [probePending, setProbePending] = useState(supportsNativeSubs);
   const nativeProbeEpoch = useRef(0);
+  useEffect(() => {
+    setProbePending(supportsNativeSubs);
+  }, [supportsNativeSubs]);
   useEffect(() => {
     const epoch = ++nativeProbeEpoch.current;
     void (async () => {
       await Promise.resolve(); // microtask — effect body stays setState-free
       if (nativeProbeEpoch.current !== epoch) return;
-      if (!supportsNativeSubs) {
+      // probe only when the user actually wants Arabic — with subs off the
+      // embed URL builds instantly (one round-trip faster playback start)
+      if (!supportsNativeSubs || subLang !== "ar") {
         setNativeSubReady(false);
+        setProbePending(false);
         return;
       }
-      setNativeSubReady(null);
       try {
         const qs = new URLSearchParams({ type, id: imdbId, lang: "ar" });
         if (type === "series" && season) qs.set("season", String(season));
@@ -228,16 +258,20 @@ export function StreamPlayer({
       } catch {
         if (nativeProbeEpoch.current !== epoch) return;
         setNativeSubReady(false);
+      } finally {
+        if (nativeProbeEpoch.current === epoch) setProbePending(false);
       }
     })();
     return () => {
       nativeProbeEpoch.current += 1;
     };
-  }, [supportsNativeSubs, type, imdbId, season, episode]);
+  }, [supportsNativeSubs, subLang, serverId, type, imdbId, season, episode]);
 
   // absolute https URL required — the PROVIDER iframe fetches it from the
   // viewer's browser, so a relative path would resolve against their origin
-  const subFileUrl = nativeSubReady
+  const nativeInject =
+    supportsNativeSubs && nativeSubReady && subLang === "ar" && !probePending;
+  const subFileUrl = nativeInject
     ? `${window.location.origin}/api/subs/file?${new URLSearchParams({
         type,
         id: imdbId,
@@ -246,23 +280,37 @@ export function StreamPlayer({
         ...(type === "series" && episode ? { episode: String(episode) } : {}),
       }).toString()}`
     : null;
-  // src stays "" (about:blank behind the loading veil) until the availability
-  // probe lands — one navigation, no reload flicker.
-  const src =
-    nativeSubReady === null
-      ? ""
-      : server.build(type, imdbId, season, episode, {
-          subUrl: subFileUrl ?? undefined,
-        });
+  // fresh stages stay on about:blank behind the veil until the probe lands —
+  // one navigation, no reload flicker
+  const src = probePending
+    ? ""
+    : server.build(type, imdbId, season, episode, {
+        subUrl: subFileUrl ?? undefined,
+        subLang,
+      });
 
-  // ── AR-only policy (user requirement) ──
-  // Playback ALWAYS starts with Arabic subtitles on: an English/OFF selection
-  // left over from an earlier session is overridden the moment the player
-  // mounts (the player remounts per episode, so every episode gets AR).
+  // ── subtitle delivery switches only by user choice ──
+  // Injecting/removing the provider-native track changes the embed URL —
+  // providers can't hot-swap tracks mid-stream, so the frame remounts
+  // (frameKey bump) and playback restarts from the head. The viewer deserves
+  // to know WHY — but only on a real session switch: veil-covered first
+  // loads and probe-landings stay silent.
+  const delivery = nativeInject ? "nat" : "std";
+  const prevDeliveryRef = useRef(delivery);
+  const firstDeliveryRef = useRef(true);
   useEffect(() => {
-    const s = useSettings.getState();
-    if (s.subLang !== "ar") s.setSubLang("ar");
-  }, []);
+    if (firstDeliveryRef.current) {
+      firstDeliveryRef.current = false;
+      prevDeliveryRef.current = delivery;
+      return;
+    }
+    if (prevDeliveryRef.current === delivery) return;
+    prevDeliveryRef.current = delivery;
+    if (probePending || loading) return; // initial load territory — silent
+    setFrameKey((k) => k + 1); // remount with the new embed URL
+    resetPlaybackState();
+    toast({ title: t("subsRestarted"), description: server.name });
+  }, [delivery, probePending, loading, t, server.name]);
 
   const fullTitle =
     type === "series" && season && episode
@@ -319,7 +367,7 @@ export function StreamPlayer({
     };
   }, [serverId, frameKey, server, sandboxOff]);
 
-  // ── subtitle fetching (Arabic default → English fallback preference) ──
+  // ── subtitle fetching (user's choice: Arabic / English / OFF) ──
   // Server may respond { pending: true } while the AI translation job runs;
   // poll every 5 s (up to ~4 min) until cues are ready.
   const [subFetchNonce, setSubFetchNonce] = useState(0);
@@ -402,8 +450,10 @@ export function StreamPlayer({
       localCuesRef.current = parsed;
       setCues(parsed);
       setSubStatus("loaded");
-      setLoadedLang(parsed.some((c) => /[\u0600-\u06FF]/.test(c.text)) ? "ar" : "en");
-      if (subLang === "off") setSubLang("ar");
+      const importedAr = parsed.some((c) => /[\u0600-\u06FF]/.test(c.text));
+      setLoadedLang(importedAr ? "ar" : "en");
+      // an explicit file import IS the user's opt-in — the setting follows it
+      setSubLang(importedAr ? "ar" : "en");
       toast({ title: t("subsLoaded"), description: `${parsed.length.toLocaleString()} cues` });
     } catch {
       toast({ title: t("error"), variant: "destructive" });
@@ -603,11 +653,34 @@ export function StreamPlayer({
   // stage needs NO fresh user gesture (nested switch); retries absorb
   // transient denials, and a final exit leaves our page in front. A request
   // rejected at UA level (fullscreenerror) flips to the CSS stage.
+  //
+  // Phones bonus: where the UA supports it (Android Chrome, installed PWA),
+  // real stage fullscreen also locks landscape like a native app player —
+  // best-effort, silent no-op everywhere else.
+  const lockOrientation = useCallback(() => {
+    try {
+      const o = screen.orientation as
+        | (ScreenOrientation & { lock?: (s: string) => Promise<void> })
+        | undefined;
+      void o?.lock?.("landscape")?.catch(() => {});
+    } catch {
+      /* unsupported — manual rotation stays */
+    }
+  }, []);
+  const unlockOrientation = useCallback(() => {
+    try {
+      (screen.orientation as (ScreenOrientation & { unlock?: () => void }) | undefined)?.unlock?.();
+    } catch {
+      /* unsupported */
+    }
+  }, []);
   useEffect(() => {
     const onFsChange = () => {
       const doc = document as Document & { webkitFullscreenElement?: Element | null };
       const fe = document.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
       setRealFs(!!fe && fe === stageRef.current);
+      if (fe && fe === stageRef.current) lockOrientation();
+      else unlockOrientation();
       if (fe && fe !== stageRef.current && stageRef.current) {
         const stage = stageRef.current;
         let tries = 0;
@@ -650,8 +723,9 @@ export function StreamPlayer({
       document.removeEventListener("fullscreenchange", onFsChange);
       document.removeEventListener("webkitfullscreenchange", onFsChange);
       document.removeEventListener("fullscreenerror", onFsError);
+      unlockOrientation();
     };
-  }, []);
+  }, [lockOrientation, unlockOrientation]);
 
   // fake fullscreen must escape the page wrapper's `isolate` stacking context
   // (see [data-fs-stage] in globals.css) so the CSS stage rises above the
@@ -667,6 +741,69 @@ export function StreamPlayer({
       document.body.style.overflow = prevOverflow;
     };
   }, [fakeFs]);
+
+  // ── fullscreen HUD visibility ──
+  // Native-player behaviour: the top HUD fades while playback runs and comes
+  // back the moment it pauses (no tap-detection possible over the provider
+  // iframe — taps belong to the provider's own controls).
+  useEffect(() => {
+    if (!fsActive || sync.status !== "playing") {
+      setHudOn(true);
+      return;
+    }
+    const hideT = setTimeout(() => setHudOn(false), 4500);
+    return () => clearTimeout(hideT);
+  }, [fsActive, sync.status]);
+
+  // ── Mobile Cinema Dock engine ──
+  // Pure repositioning — the iframe never remounts, playback never hiccups.
+  // The slot keeps the stage's exact height while it is docked, so the page
+  // never jumps; crossing back up (or leaving phone widths, or going
+  // fullscreen) releases the dock instantly.
+  useEffect(() => {
+    if (fsActive) {
+      if (dockedRef.current) {
+        dockedRef.current = false;
+        setDocked(false);
+      }
+      return;
+    }
+    const mq = window.matchMedia("(max-width: 1023px)");
+    const evaluate = () => {
+      const slot = dockSlotRef.current;
+      if (!slot || !mq.matches) {
+        if (dockedRef.current) {
+          dockedRef.current = false;
+          setDocked(false);
+        }
+        return;
+      }
+      const should = slot.getBoundingClientRect().top <= 0;
+      if (should === dockedRef.current) return;
+      if (should) slotHRef.current = stageRef.current?.offsetHeight ?? 0;
+      dockedRef.current = should;
+      setDocked(should);
+    };
+    evaluate();
+    window.addEventListener("scroll", evaluate, { passive: true });
+    window.addEventListener("resize", evaluate);
+    return () => {
+      window.removeEventListener("scroll", evaluate);
+      window.removeEventListener("resize", evaluate);
+    };
+  }, [fsActive]);
+
+  // the dock must paint ABOVE the fixed navbar — but watch pages isolate
+  // their stacking context (ambient glow), capping the stage's z-index at
+  // body level. Flag the root so globals.css lifts the isolation while the
+  // dock owns the screen top (same escape hatch as the CSS fullscreen stage).
+  useEffect(() => {
+    if (docked) document.documentElement.dataset.playerDocked = "1";
+    else delete document.documentElement.dataset.playerDocked;
+    return () => {
+      delete document.documentElement.dataset.playerDocked;
+    };
+  }, [docked]);
 
   // keyboard: F = fullscreen · T = TapSync · [ = subs later · ] = subs earlier
   useEffect(() => {
@@ -708,9 +845,10 @@ export function StreamPlayer({
 
   const cueCount = (localCues ?? cues).length;
   const showSubs = subLang !== "off" && subStatus === "loaded";
-  // when the provider renders our Arabic track natively (sub_url injection),
-  // the sibling overlay must stay silent — otherwise every line shows twice
-  const providerNativeSubs = supportsNativeSubs && nativeSubReady === true;
+  // when the provider renders our Arabic track natively (user opted in +
+  // sub_url injection), the sibling overlay must stay silent — otherwise
+  // every line shows twice
+  const providerNativeSubs = nativeInject;
   const overlayVisible = showSubs && !providerNativeSubs;
   const translatingAr = subLang === "ar" && subStatus === "loading";
   const progressPct =
@@ -741,16 +879,23 @@ export function StreamPlayer({
 
   return (
     <section className="w-full" aria-label={`${t("playerTitle")} ${fullTitle}`}>
-      {/* ── Video frame (fullscreen stage) ── */}
+      {/* ── Mobile Cinema Dock slot — keeps the stage's height while it is
+          docked so the page never jumps (stage below is pure repositioned) ── */}
+      <div
+        ref={dockSlotRef}
+        style={dockedActive ? { height: slotHRef.current } : undefined}
+      >
+      {/* ── Video frame (fullscreen stage · dockable) ── */}
       <div
         ref={stageRef}
         className={cn(
           "relative aspect-video w-full overflow-hidden border-y border-border/60 bg-black sm:rounded-2xl sm:border",
+          dockedActive && "fixed inset-x-0 top-0 z-[60] shadow-2xl shadow-black/70",
           fakeFs && "fixed inset-0 z-[9999] aspect-auto h-[100dvh] w-screen"
         )}
         // inline style beats the sm: variants (Tailwind cascade) so the
-        // fullscreen stage is edge-to-edge: no rounded corners, no border
-        style={fsActive ? { borderRadius: 0, borderWidth: 0 } : undefined}
+        // fullscreen/docked stage is edge-to-edge: no rounded corners, no border
+        style={dockedActive || fsActive ? { borderRadius: 0, borderWidth: 0 } : undefined}
       >
         <iframe
           key={frameToken}
@@ -781,7 +926,7 @@ export function StreamPlayer({
         {overlayVisible && (
           <button
             onClick={tapSync}
-            className="absolute start-3 top-3 z-40 flex min-h-[40px] items-center gap-1.5 rounded-full border border-primary/40 bg-black/55 px-3 text-xs font-bold text-primary backdrop-blur transition-all hover:scale-105 hover:bg-primary/25 active:scale-95"
+            className="absolute start-3 top-3 z-40 flex min-h-[44px] items-center gap-1.5 rounded-full border border-primary/40 bg-black/55 px-3 text-xs font-bold text-primary backdrop-blur transition-all hover:scale-105 hover:bg-primary/25 active:scale-95"
             title={t("tapSyncHint")}
             aria-label={t("tapSyncHint")}
           >
@@ -794,7 +939,7 @@ export function StreamPlayer({
         <button
           onClick={toggleFullscreen}
           className={cn(
-            "absolute end-3 top-3 z-40 flex h-10 w-10 items-center justify-center rounded-full text-white/90 backdrop-blur transition-all hover:scale-105 active:scale-95",
+            "absolute end-3 top-3 z-40 flex h-11 w-11 items-center justify-center rounded-full text-white/90 backdrop-blur transition-all hover:scale-105 active:scale-95",
             fsActive ? "bg-primary/25 hover:bg-primary/40" : "bg-black/55 hover:bg-black/75"
           )}
           title={fsActive ? t("exitFullscreen") : t("fullscreen")}
@@ -806,6 +951,60 @@ export function StreamPlayer({
             <Maximize2 className="h-5 w-5" aria-hidden />
           )}
         </button>
+
+        {/* fullscreen HUD — title, live clock, story-style progress hairline,
+            play/pause + CC quick toggle. Fades after 4.5s of playback (the
+            provider's own controls own the taps inside the video); returns
+            the moment playback pauses. The ⛶ above stays permanently. */}
+        {fsActive && hudOn && (
+          <div className="absolute inset-x-0 top-0 z-30">
+            <div className="h-[3px] w-full bg-white/15" aria-hidden>
+              <div
+                className="h-full bg-primary transition-[width] duration-300 ease-linear"
+                style={{ width: `${progressPct}%` }}
+              />
+            </div>
+            <div className="flex items-center gap-2.5 bg-gradient-to-b from-black/85 via-black/50 to-transparent px-4 pb-10 pt-2.5">
+              <p className="min-w-0 flex-1 truncate text-xs font-bold text-white/90" dir="auto">
+                {fullTitle}
+              </p>
+              <span className="shrink-0 font-mono text-xs font-bold tabular-nums text-white/85">
+                {formatClock(sync.currentTime)}
+                {sync.duration > 0 && (
+                  <span className="text-white/50"> / {formatClock(sync.duration)}</span>
+                )}
+              </span>
+              {sync.providerDriven && (
+                <button
+                  onClick={() => sync.sendCommand(sync.status === "playing" ? "pause" : "play")}
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/10 text-white backdrop-blur transition-colors hover:bg-white/20"
+                  aria-label={sync.status === "playing" ? t("pause") : t("play")}
+                  title={sync.status === "playing" ? t("pause") : t("play")}
+                >
+                  {sync.status === "playing" ? (
+                    <Pause className="h-5 w-5 fill-white" aria-hidden />
+                  ) : (
+                    <Play className="h-5 w-5 fill-white" aria-hidden />
+                  )}
+                </button>
+              )}
+              <button
+                onClick={() => setSubLang(subLang === "ar" ? "off" : "ar")}
+                className={cn(
+                  "flex h-11 w-11 shrink-0 items-center justify-center rounded-full backdrop-blur transition-colors",
+                  subLang === "ar"
+                    ? "bg-primary/30 text-primary hover:bg-primary/45"
+                    : "bg-white/10 text-white hover:bg-white/20"
+                )}
+                aria-label={t("subtitles")}
+                aria-pressed={subLang === "ar"}
+                title={t("subtitles")}
+              >
+                <Captions className="h-5 w-5" aria-hidden />
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* loading veil */}
         {loading && (
@@ -834,20 +1033,20 @@ export function StreamPlayer({
                   const idx = SERVERS.findIndex((s) => s.id === serverId);
                   switchServer(SERVERS[(idx + 1) % SERVERS.length].id);
                 }}
-                className="min-h-[40px] rounded-full bg-primary px-5 py-2 text-xs font-black text-black transition-transform active:scale-95"
+                className="min-h-[44px] rounded-full bg-primary px-5 py-2 text-xs font-black text-black transition-transform active:scale-95"
               >
                 {t("switchServer")} →
               </button>
               <button
                 onClick={openDirect}
-                className="flex min-h-[40px] items-center gap-1.5 rounded-full border border-white/25 px-5 py-2 text-xs font-bold text-zinc-300 transition-colors hover:text-white"
+                className="flex min-h-[44px] items-center gap-1.5 rounded-full border border-white/25 px-5 py-2 text-xs font-bold text-zinc-300 transition-colors hover:text-white"
               >
                 <ExternalLink className="h-3.5 w-3.5" aria-hidden />
                 {t("openDirect")}
               </button>
               <button
                 onClick={() => setOverlayDismissed(true)}
-                className="min-h-[40px] rounded-full border border-white/25 px-5 py-2 text-xs font-bold text-zinc-300 transition-colors hover:text-white"
+                className="min-h-[44px] rounded-full border border-white/25 px-5 py-2 text-xs font-bold text-zinc-300 transition-colors hover:text-white"
               >
                 {t("back")}
               </button>
@@ -875,6 +1074,18 @@ export function StreamPlayer({
           visible={overlayVisible}
           scale={fsActive ? 1.4 : 1}
         />
+
+        {/* docked progress hairline — the story-style pulse of life at the
+            dock's bottom edge while the page flows underneath */}
+        {dockedActive && (
+          <div className="absolute inset-x-0 bottom-0 z-40 h-[3px] bg-white/10" aria-hidden>
+            <div
+              className="h-full bg-primary transition-[width] duration-500 ease-linear"
+              style={{ width: `${progressPct}%` }}
+            />
+          </div>
+        )}
+      </div>
       </div>
 
       {/* ── Control deck ── */}
@@ -884,14 +1095,14 @@ export function StreamPlayer({
           <div className="flex items-center gap-3 rounded-xl border border-border/50 bg-black/40 px-3 py-2">
             <button
               onClick={() => sync.sendCommand(sync.status === "playing" ? "pause" : "play")}
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary transition-colors hover:bg-primary/25"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary transition-colors hover:bg-primary/25"
               aria-label={sync.status === "playing" ? t("pause") : t("play")}
               title={sync.status === "playing" ? t("pause") : t("play")}
             >
               {sync.status === "playing" ? (
-                <Pause className="h-4 w-4 fill-primary" aria-hidden />
+                <Pause className="h-5 w-5 fill-primary" aria-hidden />
               ) : (
-                <Play className="h-4 w-4 fill-primary" aria-hidden />
+                <Play className="h-5 w-5 fill-primary" aria-hidden />
               )}
             </button>
 
@@ -945,7 +1156,7 @@ export function StreamPlayer({
             {/* fullscreen — labeled, always one tap away (key: F) */}
             <button
               onClick={toggleFullscreen}
-              className="flex min-h-[36px] items-center gap-1.5 rounded-full border border-border/70 bg-card/60 px-3 py-1.5 text-xs font-bold text-muted-foreground transition-all hover:border-primary/40 hover:text-foreground"
+              className="flex min-h-[44px] items-center gap-1.5 rounded-full border border-border/70 bg-card/60 px-3 py-1.5 text-xs font-bold text-muted-foreground transition-all hover:border-primary/40 hover:text-foreground"
               title={fsActive ? t("exitFullscreen") : t("fullscreen")}
               aria-label={fsActive ? t("exitFullscreen") : t("fullscreen")}
             >
@@ -964,7 +1175,7 @@ export function StreamPlayer({
               <button
                 onClick={startManualSync}
                 className={cn(
-                  "flex min-h-[36px] items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-bold transition-all",
+                  "flex min-h-[44px] items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-bold transition-all",
                   sync.manualMode
                     ? "border-primary/50 bg-primary/10 text-primary"
                     : "border-amber-400/50 bg-amber-400/10 text-amber-300 animate-pulse-glow"
@@ -997,7 +1208,7 @@ export function StreamPlayer({
             <button
               onClick={() => setSettingsOpen(true)}
               className={cn(
-                "flex min-h-[36px] items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-bold transition-all",
+                "flex min-h-[44px] items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-bold transition-all",
                 showSubs
                   ? "border-primary/50 bg-primary/10 text-primary"
                   : "border-border/70 bg-card/60 text-muted-foreground hover:border-primary/40 hover:text-foreground"
@@ -1015,7 +1226,7 @@ export function StreamPlayer({
 
             <button
               onClick={openDirect}
-              className="flex min-h-[36px] items-center gap-1.5 rounded-full border border-border/70 bg-card/60 px-3 py-1.5 text-xs font-bold text-muted-foreground transition-all hover:border-primary/40 hover:text-foreground"
+              className="flex min-h-[44px] items-center gap-1.5 rounded-full border border-border/70 bg-card/60 px-3 py-1.5 text-xs font-bold text-muted-foreground transition-all hover:border-primary/40 hover:text-foreground"
               title={t("openDirect")}
             >
               <ExternalLink className="h-3.5 w-3.5" aria-hidden />
@@ -1024,7 +1235,7 @@ export function StreamPlayer({
 
             <button
               onClick={refreshFrame}
-              className="flex min-h-[36px] items-center gap-1.5 rounded-full border border-border/70 bg-card/60 px-3 py-1.5 text-xs font-bold text-muted-foreground transition-all hover:border-primary/40 hover:text-foreground"
+              className="flex min-h-[44px] items-center gap-1.5 rounded-full border border-border/70 bg-card/60 px-3 py-1.5 text-xs font-bold text-muted-foreground transition-all hover:border-primary/40 hover:text-foreground"
               title={t("switchServer")}
             >
               <RefreshCw className="h-3.5 w-3.5" aria-hidden />

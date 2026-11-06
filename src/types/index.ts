@@ -98,6 +98,10 @@ export interface ServerBuildOpts {
   /** https URL of our cached track (WebVTT) — injected as the provider's
    *  auto-applied external subtitle (VidSrc sub_url / SuperEmbed sub_url). */
   subUrl?: string;
+  /** The viewer's caption choice — steers the provider's default track
+   *  language (ds_lang). "off" keeps the EN-suppressing ds_lang=ar probe but
+   *  injects nothing, so no captions surface unless the user opts in. */
+  subLang?: "ar" | "en" | "off";
 }
 
 export interface ServerDef {

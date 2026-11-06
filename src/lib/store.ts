@@ -5,7 +5,7 @@ import { persist, createJSONStorage } from "zustand/middleware";
 import type { HistoryEntry, MediaType, SubLang, UILang, WatchlistItem } from "@/types";
 import { sanitizePreferredServer } from "@/lib/servers";
 
-// ─── Settings · lang en default, sub arabic default, server memory ──────────
+// ─── Settings · lang en default, subtitles user-opt-in, server memory ───────
 
 interface SettingsState {
   lang: UILang;
@@ -27,7 +27,9 @@ export const useSettings = create<SettingsState>()(
   persist(
     (set) => ({
       lang: "en", // English default (user requirement)
-      subLang: "ar", // Arabic subtitles default (user requirement)
+      // Subtitles ship DISABLED — the viewer decides whether (and what) to
+      // turn on. Nothing auto-plays captions anymore (user requirement).
+      subLang: "off",
       subOffset: 0,
       subSize: 28,
       subStyle: "outline",
@@ -42,16 +44,19 @@ export const useSettings = create<SettingsState>()(
     }),
     {
       name: "senku-settings",
-      version: 2,
+      version: 3,
       storage: createJSONStorage(() => localStorage),
       // v2: frameXTV's embed falls back to a backup player that hard-fails
       // behind a "Please Disable Sandbox" screen. Reset stale frameXTV
       // preferences (and any unknown ids) so the verified-first order applies.
-      migrate: (persisted) => {
+      // v3: subtitles are now user-opt-in — every stored "ar" was set by the
+      // old auto-force policy, never by a real user choice, so it resets to
+      // OFF. From here on the viewer's explicit pick persists as-is.
+      migrate: (persisted, version) => {
         const p = (persisted ?? {}) as Partial<SettingsState>;
         return {
           lang: p.lang ?? "en",
-          subLang: p.subLang ?? "ar",
+          subLang: version >= 3 ? (p.subLang ?? "off") : "off",
           subOffset: p.subOffset ?? 0,
           subSize: p.subSize ?? 28,
           subStyle: p.subStyle ?? "outline",

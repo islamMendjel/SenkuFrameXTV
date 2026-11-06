@@ -276,3 +276,12 @@ html:not(.dark) {
 [data-fs-stage] .senku-page-root {
   isolation: auto !important;
 }
+
+/* ---------- Mobile Cinema Dock ---------- */
+/* While the docked player owns the screen top, lift the page root's
+   isolation too, so the dock's z-[60] covers the fixed navbar instead of
+   letting navbar controls bleed over the video (same escape hatch as the
+   fullscreen stage above). */
+html[data-player-docked] .senku-page-root {
+  isolation: auto !important;
+}

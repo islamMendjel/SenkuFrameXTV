@@ -31,7 +31,7 @@ function ServerSwitcherBase({ activeId, loading, slow, onSelect, t }: Props) {
             onClick={() => !active && onSelect(s.id)}
             className={cn(
               "group flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-all duration-200",
-              "min-h-[32px] touch-manipulation",
+              "min-h-[44px] touch-manipulation",
               active
                 ? "border-primary/60 bg-primary/15 text-primary neon-ring"
                 : "border-border/70 bg-card/60 text-muted-foreground hover:border-primary/40 hover:text-foreground"
