@@ -43,6 +43,10 @@ export const SERVERS: ServerDef[] = [
     tag: "Alpha",
     quality: "1080p",
     nativeSubs: true,
+    // verified: their sbx.js probe (document.domain assignment throws inside
+    // ANY sandboxed Chromium frame) redirects to a "can't be embedded in a
+    // sandboxed frame" wall — NO sandbox token combination survives it
+    sandboxOk: false,
     build: (type, imdbId, season, episode, opts) =>
       type === "movie"
         ? withSubParams(`https://vidsrc.sh/embed/movie/${imdbId}`, opts)
@@ -57,6 +61,7 @@ export const SERVERS: ServerDef[] = [
     tag: "Beta",
     quality: "1080p",
     nativeSubs: true,
+    sandboxOk: false, // verified: player never renders inside a sandbox
     build: (type, imdbId, season, episode, opts) =>
       type === "movie"
         ? withSubParams(`https://vidsrc.icu/embed/movie/${imdbId}`, opts)
@@ -71,6 +76,7 @@ export const SERVERS: ServerDef[] = [
     tag: "Multi",
     quality: "Multi-Qual",
     nativeSubs: true,
+    sandboxOk: false, // verified: frame never paints inside a sandbox
     build: (type, imdbId, season, episode, opts) => {
       const base =
         type === "movie"
@@ -89,16 +95,29 @@ export const SERVERS: ServerDef[] = [
     name: "2Embed",
     tag: "Reserve",
     quality: "720p+",
-    build: (type, imdbId, season, episode) =>
-      type === "movie"
-        ? `https://www.2embed.cc/embed/${imdbId}`
-        : `https://www.2embed.cc/embedtv/${imdbId}&s=${season ?? 1}&e=${episode ?? 1}`,
+    // 2embed is a SuperEmbed mirror → same &sub_url/&sub_label protocol as
+    // multiembed: our cached Arabic track autoplays, the provider's English
+    // default track never surfaces (AR-only policy, user requirement).
+    nativeSubs: true,
+    build: (type, imdbId, season, episode, opts) => {
+      const sub = opts?.subUrl
+        ? `sub_url=${encodeURIComponent(opts.subUrl)}&sub_label=${encodeURIComponent("العربية")}`
+        : null;
+      if (type === "movie") {
+        return sub ? `https://www.2embed.cc/embed/${imdbId}?${sub}` : `https://www.2embed.cc/embed/${imdbId}`;
+      }
+      // VERIFIED in the sandbox matrix lab: 2embed parses the RAW href — the
+      // "?s=.." form silently degraded to S01E01 while "&s=.." shows S08E21.
+      const base = `https://www.2embed.cc/embedtv/${imdbId}&s=${season ?? 1}&e=${episode ?? 1}`;
+      return sub ? `${base}&${sub}` : base;
+    },
   },
   {
     id: "vidlink",
     name: "VidLink",
     tag: "Nova",
     quality: "1080p",
+    // no nativeSubs → provider params unknown; our 60fps AR overlay covers it
     build: (type, imdbId, season, episode) =>
       type === "movie"
         ? `https://vidlink.pro/movie/${imdbId}`
@@ -109,6 +128,9 @@ export const SERVERS: ServerDef[] = [
     name: "frameXTV",
     tag: "Barbarian",
     quality: "4K · HDR",
+    // its VidUP backup player probes plugins and brick-walls inside sandboxed
+    // frames ("Please Disable Sandbox") → ships unsandboxed, WITH ads
+    sandboxOk: false,
     build: (type, imdbId, season, episode) =>
       type === "movie"
         ? `https://framextv.cc/embed/movie/${imdbId}?autoplay=1`
@@ -119,6 +141,7 @@ export const SERVERS: ServerDef[] = [
     name: "frameXTV",
     tag: "Archer",
     quality: "4K · HDR",
+    sandboxOk: false,
     build: (type, imdbId, season, episode) =>
       type === "movie"
         ? `https://framextv.cc/embed/movie/${imdbId}?server=archer&autoplay=1`

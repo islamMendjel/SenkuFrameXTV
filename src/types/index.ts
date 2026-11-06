@@ -115,4 +115,7 @@ export interface ServerDef {
   /** Provider accepts an external auto-applied subtitle track → the player
    *  probes /api/subs/available and injects our Arabic VTT when cached. */
   nativeSubs?: boolean;
+  /** false → provider breaks inside a sandboxed iframe (its own player probe
+   *  hard-fails), so the frame ships WITHOUT the ad-blocking sandbox. */
+  sandboxOk?: boolean;
 }

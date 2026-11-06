@@ -51,17 +51,39 @@ interface Props {
 
 type SubStatus = "idle" | "loading" | "loaded" | "none";
 
-// NOTE: no `sandbox` attribute on player iframes — VidSrc-family providers
-// detect sandboxed frames and refuse to play ("Please Disable Sandbox").
-// We keep the frame locked down via `allow` permissions instead.
+// ── Ad shield (iframe sandbox) ──
+// VidSrc-family embeds monetize HARD: popup-unders, tab-unders, clickaway
+// redirects. A sandboxed frame WITHOUT allow-popups / allow-top-navigation
+// kills every one of them at UA level — spec-guaranteed, no extension needed.
+// Providers that break inside a sandbox are marked sandboxOk:false, and any
+// server that fails WHILE shielded is retried unsandboxed once — the shield
+// never costs us playback (self-healing exception, remembered per server).
+function sandboxException(id: string): boolean {
+  try {
+    return (
+      typeof window !== "undefined" &&
+      window.localStorage.getItem(`senku.nosandbox:${id}`) === "1"
+    );
+  } catch {
+    return false;
+  }
+}
+function markSandboxException(id: string) {
+  try {
+    window.localStorage.setItem(`senku.nosandbox:${id}`, "1");
+  } catch {
+    /* private mode — in-memory retry only */
+  }
+}
 
 // ── Auto lead (Frame-Lock ±) ──
 // Provider telemetry is sampled BEFORE it travels the relay chain
-// (player → wrapper iframe → our window) and is quantized to 0.1s, so the
-// reconstructed clock structurally trails the audio by ~300–500ms. The
-// subtitle lookup compensates with a constant lead — the transport bar and
-// watch-history stay exact. Per-episode [ / ] nudges stack on top.
-const SUBTITLE_LEAD_S = 0.4;
+// (player → wrapper iframe → our window), quantized to 0.1s, and the cue
+// data itself is mastered against a different release than the stream —
+// both push captions structurally BEHIND the audio. The subtitle lookup
+// compensates with a constant lead; the transport bar and watch-history
+// stay exact. Per-episode [ / ] nudges stack on top.
+const SUBTITLE_LEAD_S = 0.65;
 
 export function StreamPlayer({
   type,
@@ -90,6 +112,13 @@ export function StreamPlayer({
   const [slow, setSlow] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [overlayDismissed, setOverlayDismissed] = useState(false);
+
+  // ── ad shield state ──
+  // sandboxOff = this server already failed inside the shield once (memory or
+  // this session) → frame ships unsandboxed. frameToken includes the shield
+  // mode so the iframe remounts when it toggles.
+  const [sandboxOff, setSandboxOff] = useState<boolean>(() => sandboxException(serverId));
+  const sandboxRetriedRef = useRef(false);
 
   // ── True fullscreen (stage-level) ──
   // The whole stage — provider video + subtitle overlay — goes fullscreen as
@@ -139,7 +168,7 @@ export function StreamPlayer({
   const userPickedRef = useRef(false);
 
   // ── Autopilot telemetry engine ──
-  const frameToken = `${serverId}-${frameKey}`;
+  const frameToken = `${serverId}-${frameKey}-${sandboxOff ? "ns" : "sb"}`;
   const playerFrameRef = useRef<HTMLIFrameElement | null>(null);
   const sync = usePlayerSync(frameToken, playerFrameRef);
 
@@ -253,6 +282,17 @@ export function StreamPlayer({
     }, 8000);
     const failT = setTimeout(() => {
       if (loadedRef.current || userPickedRef.current) return;
+      // self-heal: a server that can't even load inside the ad shield gets
+      // ONE unsandboxed retry before we give up on it entirely
+      if (server.sandboxOk !== false && !sandboxOff && !sandboxRetriedRef.current) {
+        sandboxRetriedRef.current = true;
+        markSandboxException(serverId);
+        setSandboxOff(true);
+        setFrameKey((k) => k + 1);
+        resetPlaybackState();
+        toast({ title: t("adsShieldRetry"), description: server.name });
+        return;
+      }
       triedRef.current.add(serverId);
       const next = SERVERS.find((s) => !triedRef.current.has(s.id));
       if (next) {
@@ -262,6 +302,8 @@ export function StreamPlayer({
         });
         setServerId(next.id);
         setPreferredServer(next.id);
+        setSandboxOff(sandboxException(next.id));
+        sandboxRetriedRef.current = false;
         setFrameKey((k) => k + 1);
         resetPlaybackState();
       } else {
@@ -272,7 +314,7 @@ export function StreamPlayer({
       clearTimeout(veilT);
       clearTimeout(failT);
     };
-  }, [serverId, frameKey]);
+  }, [serverId, frameKey, server, sandboxOff]);
 
   // ── subtitle fetching (Arabic default → English fallback preference) ──
   // Server may respond { pending: true } while the AI translation job runs;
@@ -430,6 +472,8 @@ export function StreamPlayer({
     triedRef.current = new Set([id]);
     setServerId(id);
     setPreferredServer(id);
+    setSandboxOff(sandboxException(id));
+    sandboxRetriedRef.current = false;
     setFrameKey((k) => k + 1);
     resetPlaybackState();
   };
@@ -450,23 +494,29 @@ export function StreamPlayer({
   };
 
   // ── True fullscreen control ──
-  // requestFullscreen runs SYNCHRONOUSLY inside the click (transient user
-  // activation) and falls back through: webkit API → one delayed retry →
-  // CSS stage (fakeFs). The CSS stage guarantees a fullscreen-like view even
-  // when the UA denies the API outright (permission policies, sandboxed
-  // embedders, iOS Safari) — the user ALWAYS lands fullscreen.
+  // Deterministic capability probe FIRST. Many real-world embedders — preview
+  // panels, in-app webviews, iOS Safari — hard-disable element fullscreen
+  // (document.fullscreenEnabled === false); requesting anyway just burns the
+  // click on a guaranteed rejection. We probe once and land in the CSS stage
+  // immediately. Where the API IS allowed, the request runs synchronously
+  // inside the click (transient activation) with one transient-denial retry.
   const enterFullscreen = useCallback(() => {
     const stage = stageRef.current;
     if (!stage) return;
-    if (document.fullscreenElement === stage) return;
+    const docAny = document as Document & { webkitFullscreenEnabled?: boolean };
     const stageAny = stage as HTMLDivElement & {
       webkitRequestFullscreen?: () => Promise<void> | void;
     };
+    const fsEnabled =
+      document.fullscreenEnabled ?? docAny.webkitFullscreenEnabled ?? false;
     const hasApi =
       typeof stage.requestFullscreen === "function" ||
       typeof stageAny.webkitRequestFullscreen === "function";
-    if (!hasApi) {
-      setFakeFs(true); // element fullscreen unsupported → CSS stage
+    if (!hasApi || !fsEnabled) {
+      // UA hard-disables element fullscreen here → CSS stage NOW, zero
+      // rejection dance — the user still lands fullscreen on the first tap
+      setFakeFs(true);
+      toast({ title: t("fullscreen"), description: t("fullscreenFallback") });
       return;
     }
     const req = (): Promise<void> | void =>
@@ -477,8 +527,8 @@ export function StreamPlayer({
       const p = req();
       if (p && typeof (p as Promise<void>).catch === "function") {
         (p as Promise<void>).catch(() => {
-          // denied — one beat later, one retry; then the CSS stage so the
-          // promise of a fullscreen view is always kept
+          // transient denial (activation timing) — one beat, one retry, then
+          // the CSS stage so the promise of a fullscreen view is always kept
           setTimeout(() => {
             if (document.fullscreenElement === stage) return;
             try {
@@ -492,7 +542,7 @@ export function StreamPlayer({
             } catch {
               setFakeFs(true);
             }
-          }, 150);
+          }, 180);
         });
       }
     } catch {
@@ -572,12 +622,16 @@ export function StreamPlayer({
 
   // fake fullscreen must escape the page wrapper's `isolate` stacking context
   // (see [data-fs-stage] in globals.css) so the CSS stage rises above the
-  // fixed navbar instead of hiding behind it
+  // fixed navbar instead of hiding behind it; the page also can't scroll
+  // behind the stage while it holds the whole viewport
   useEffect(() => {
     if (!fakeFs) return;
     document.documentElement.dataset.fsStage = "1";
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     return () => {
       delete document.documentElement.dataset.fsStage;
+      document.body.style.overflow = prevOverflow;
     };
   }, [fakeFs]);
 
@@ -667,6 +721,14 @@ export function StreamPlayer({
           ref={playerFrameRef}
           className="absolute inset-0 h-full w-full"
           referrerPolicy="origin"
+          // ad shield: no popups (popup/tab-unders), no top-navigation
+          // (clickaway redirects), no same-origin page hijacks. Playability
+          // keeps working — playback APIs run inside the frame itself.
+          sandbox={
+            server.sandboxOk === false || sandboxOff
+              ? undefined
+              : "allow-scripts allow-same-origin allow-forms allow-presentation"
+          }
           allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
           allowFullScreen
           onLoad={() => {
