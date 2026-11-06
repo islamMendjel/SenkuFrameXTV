@@ -3,7 +3,7 @@
    - cache-first: posters/backdrops (long TTL)
    - network-first: API + pages (fresh content, offline fallback)          */
 
-const VERSION = "senku-v4";
+const VERSION = "senku-v5";
 const SHELL_CACHE = `${VERSION}-shell`;
 const IMG_CACHE = `${VERSION}-img`;
 const PAGE_CACHE = `${VERSION}-pages`;

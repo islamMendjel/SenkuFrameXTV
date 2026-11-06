@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { buildSubCacheKey } from "@/lib/subCacheKey";
+import { shiftCues } from "@/lib/subCalibration";
 import type { SubtitleCue } from "@/types";
 
 // ─── GET /api/subs/file?type=&id=&lang=ar&season=&episode= ──────────────────
@@ -23,8 +24,9 @@ function vttTime(t: number): string {
 }
 
 function cuesToVtt(cues: SubtitleCue[]): string {
+  const calibrated = shiftCues(cues); // global release-offset calibration
   const out: string[] = ["WEBVTT", ""];
-  cues.forEach((c, i) => {
+  calibrated.forEach((c, i) => {
     const text = c.text.replace(/\r/g, "").replace(/\n{2,}/g, "\n").trim();
     if (!text) return;
     out.push(String(i + 1));

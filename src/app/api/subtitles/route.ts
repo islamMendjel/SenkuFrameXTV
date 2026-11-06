@@ -5,6 +5,7 @@ import { translateCues } from "@/lib/llmTranslate";
 import { db } from "@/lib/db";
 import { getMeta } from "@/lib/cinemeta";
 import { buildSubCacheKey } from "@/lib/subCacheKey";
+import { shiftCues } from "@/lib/subCalibration";
 import type { SubtitleCue, SubtitleTrackInfo } from "@/types";
 
 // ─── GET /api/subtitles?type=&id=&lang=ar|en&season=&episode= ────────────────
@@ -67,6 +68,15 @@ const jobs: Map<string, SubJob> =
 
 // Translation-engine version lives in @/lib/subCacheKey (shared with the
 // provider-native /api/subs/* endpoints so every surface agrees on keys).
+
+// ── serve-time calibration ──
+// Every cue payload leaving this route passes through shiftCues(): the raw
+// cache stays untouched, while native + overlay surfaces get the globally
+// calibrated timeline (release-offset fix, see lib/subCalibration.ts).
+function calibrated<T extends { cues?: SubtitleCue[] }>(payload: T): T {
+  if (!payload.cues || payload.cues.length === 0) return payload;
+  return { ...payload, cues: shiftCues(payload.cues) };
+}
 
 // ── source 1: official OpenSubtitles API (needs env key) ──
 async function viaOfficialApi(
@@ -317,27 +327,31 @@ export async function GET(req: NextRequest) {
 
   // 0a. memory
   const hit = memCache.get(cacheKey);
-  if (hit && hit.exp > Date.now()) return NextResponse.json(hit.payload);
+  if (hit && hit.exp > Date.now()) return NextResponse.json(calibrated(hit.payload));
 
   // 0b. running translation job → report progress (+ interim English cues)
   const job = jobs.get(cacheKey);
   if (job && job.status === "running") {
-    return NextResponse.json({
-      pending: true,
-      progress: job.progress,
-      lang,
-      interim: job.interimCues ? true : undefined,
-      cues: job.interimCues,
-      count: job.interimCues?.length,
-    });
+    return NextResponse.json(
+      calibrated({
+        pending: true,
+        progress: job.progress,
+        lang,
+        interim: job.interimCues ? true : undefined,
+        cues: job.interimCues,
+        count: job.interimCues?.length,
+      })
+    );
   }
 
   // 0c. DB
   const dbRow = await readDb(cacheKey);
   if (dbRow) {
+    // RAW cues go into memCache — calibration happens at the response edge
+    // (0a re-calibrates), never inside the cache (would double-shift)
     const payload = { lang, count: dbRow.count, cues: dbRow.cues, source: dbRow.source };
     memCache.set(cacheKey, { exp: Date.now() + MEM_TTL, payload });
-    return NextResponse.json(payload);
+    return NextResponse.json(calibrated(payload));
   }
 
   // 0d. recent negative → don't hammer sources
@@ -349,8 +363,8 @@ export async function GET(req: NextRequest) {
   // 1. official API
   let result = await viaOfficialApi(type, imdbId, lang, season, episode).catch(() => null);
   if (result) {
-    const payload = { lang, count: result.cues.length, cues: result.cues, source: "opensubtitles-api" };
-    memCache.set(cacheKey, { exp: Date.now() + MEM_TTL, payload });
+    const payload = calibrated({ lang, count: result.cues.length, cues: result.cues, source: "opensubtitles-api" });
+    memCache.set(cacheKey, { exp: Date.now() + MEM_TTL, payload: { ...payload, cues: result.cues } });
     writeDb(cacheKey, lang, result.cues, "opensubtitles-api");
     return NextResponse.json(payload);
   }
@@ -358,13 +372,13 @@ export async function GET(req: NextRequest) {
   // 2. v3 addon
   result = await viaAddon(type, imdbId, lang, season, episode).catch(() => null);
   if (result) {
-    const payload = {
+    const payload = calibrated({
       lang,
       count: result.cues.length,
       cues: result.cues,
       source: "opensubtitles-addon",
-    };
-    memCache.set(cacheKey, { exp: Date.now() + MEM_TTL, payload });
+    });
+    memCache.set(cacheKey, { exp: Date.now() + MEM_TTL, payload: { ...payload, cues: result.cues } });
     writeDb(cacheKey, lang, result.cues, "opensubtitles-addon");
     return NextResponse.json(payload);
   }
@@ -376,13 +390,13 @@ export async function GET(req: NextRequest) {
     const scBase = await viaSubtitleCat(metaName, type, season, episode).catch(() => null);
     if (scBase) {
       if (lang === "en") {
-        const payload = {
+        const payload = calibrated({
           lang,
           count: scBase.cues.length,
           cues: scBase.cues,
           source: `subtitlecat:${scBase.release}`,
-        };
-        memCache.set(cacheKey, { exp: Date.now() + MEM_TTL, payload });
+        });
+        memCache.set(cacheKey, { exp: Date.now() + MEM_TTL, payload: { ...payload, cues: scBase.cues } });
         writeDb(cacheKey, lang, scBase.cues, `subtitlecat:${scBase.release}`);
         return NextResponse.json(payload);
       }
@@ -403,14 +417,16 @@ export async function GET(req: NextRequest) {
           if (j && j.status !== "running") jobs.delete(cacheKey);
         }, 600_000);
       });
-      return NextResponse.json({
-        pending: true,
-        progress: 0,
-        lang,
-        interim: true,
-        cues: scBase.cues,
-        count: scBase.cues.length,
-      });
+      return NextResponse.json(
+        calibrated({
+          pending: true,
+          progress: 0,
+          lang,
+          interim: true,
+          cues: scBase.cues,
+          count: scBase.cues.length,
+        })
+      );
     }
   }
 

@@ -4,8 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getServer, SERVERS } from "@/lib/servers";
 import { useSettings, useHistory } from "@/lib/store";
 import { useT } from "@/hooks/useT";
-import { parseSubtitles, decodeSubtitleBuffer, formatClock, formatOffset } from "@/lib/subParser";
+import { parseSubtitles, decodeSubtitleBuffer, formatClock, formatOffset, cueAt } from "@/lib/subParser";
 import { readSubOffset, writeSubOffset } from "@/lib/subOffset";
+import { SUB_CALIBRATION_S } from "@/lib/subCalibration";
 import { usePlayerSync } from "@/hooks/usePlayerSync";
 import type { MediaType, SubtitleCue } from "@/types";
 import { cn } from "@/lib/utils";
@@ -15,6 +16,7 @@ import { SubtitleSettingsModal } from "./SubtitleSettingsModal";
 import { NextEpisodeCard, type NextEpisodeInfo } from "./NextEpisodeCard";
 import {
   AlertTriangle,
+  AudioLines,
   Captions,
   ExternalLink,
   Languages,
@@ -77,13 +79,14 @@ function markSandboxException(id: string) {
 }
 
 // ── Auto lead (Frame-Lock ±) ──
-// Provider telemetry is sampled BEFORE it travels the relay chain
-// (player → wrapper iframe → our window), quantized to 0.1s, and the cue
-// data itself is mastered against a different release than the stream —
-// both push captions structurally BEHIND the audio. The subtitle lookup
-// compensates with a constant lead; the transport bar and watch-history
-// stay exact. Per-episode [ / ] nudges stack on top.
-const SUBTITLE_LEAD_S = 0.65;
+// The RELEASE offset (~1s, user-measured) is calibrated at the DATA layer —
+// /api/subtitles + /api/subs/file serve cues shifted by SUB_CALIBRATION_S, so
+// both the provider-native track and this overlay inherit it. What remains
+// HERE is only the relay-chain latency: telemetry is sampled before it
+// travels the player → wrapper → our window, so the reconstructed clock
+// trails the audio by ~250ms. Per-episode [ / ] nudges and TapSync stack on
+// top of both.
+const SUBTITLE_LEAD_S = 0.25;
 
 export function StreamPlayer({
   type,
@@ -493,6 +496,36 @@ export function StreamPlayer({
     toast({ title: t("syncRunning"), description: t("startSyncHint") });
   };
 
+  // ── TapSync™ — one-tap ear calibration ──
+  // The viewer taps exactly when they HEAR a line; the caption that should be
+  // showing (the active one if it's already up, else the next upcoming cue)
+  // snaps to that instant. One tap = exact correction, self-replaceable —
+  // no modal, no ±0.1 hunting. Persisted per episode like every nudge.
+  const tapSync = useCallback(() => {
+    const list = localCues ?? cues;
+    if (list.length === 0) {
+      toast({ title: t("tapSyncNone"), variant: "destructive" });
+      return;
+    }
+    const tTap = sync.getTime();
+    const lookup = tTap + effectiveOffset + SUBTITLE_LEAD_S;
+    const target = cueAt(list, lookup) ?? list.find((c) => c.start > lookup) ?? null;
+    if (!target) {
+      toast({ title: t("tapSyncNone"), variant: "destructive" });
+      return;
+    }
+    // want: target shows exactly at tap → tTap + epOffset + LEAD = target.start
+    const next = Math.max(
+      -30,
+      Math.min(30, Math.round((target.start - tTap - SUBTITLE_LEAD_S) * 10) / 10)
+    );
+    applyOffset(next);
+    toast({
+      title: t("tapSynced"),
+      description: `${formatOffset(next * 1000)} · ${t("syncScopeEpisode")}`,
+    });
+  }, [cues, localCues, sync, effectiveOffset, applyOffset, t]);
+
   // ── True fullscreen control ──
   // Deterministic capability probe FIRST. Many real-world embedders — preview
   // panels, in-app webviews, iOS Safari — hard-disable element fullscreen
@@ -635,7 +668,7 @@ export function StreamPlayer({
     };
   }, [fakeFs]);
 
-  // keyboard: F = fullscreen · [ = subs later · ] = subs earlier
+  // keyboard: F = fullscreen · T = TapSync · [ = subs later · ] = subs earlier
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null;
@@ -648,6 +681,11 @@ export function StreamPlayer({
       if (e.key === "f" || e.key === "F") {
         e.preventDefault();
         toggleFullscreen();
+      } else if (e.key === "t" || e.key === "T") {
+        if (overlayVisible) {
+          e.preventDefault();
+          tapSync();
+        }
       } else if (e.key === "Escape" && fakeFs) {
         setFakeFs(false); // CSS stage exits with Esc like a real fullscreen
       } else if (e.key === "[") {
@@ -736,6 +774,21 @@ export function StreamPlayer({
             setLoading(false);
           }}
         />
+
+        {/* TapSync — one-tap ear calibration (overlay path only: the native
+            provider track renders calibrated cues on its own timeline and
+            can't consume live offsets) */}
+        {overlayVisible && (
+          <button
+            onClick={tapSync}
+            className="absolute start-3 top-3 z-40 flex min-h-[40px] items-center gap-1.5 rounded-full border border-primary/40 bg-black/55 px-3 text-xs font-bold text-primary backdrop-blur transition-all hover:scale-105 hover:bg-primary/25 active:scale-95"
+            title={t("tapSyncHint")}
+            aria-label={t("tapSyncHint")}
+          >
+            <AudioLines className="h-4 w-4" aria-hidden />
+            {t("tapSync")}
+          </button>
+        )}
 
         {/* fullscreen toggle — stage-level so subtitles ride along (key: F) */}
         <button
@@ -1031,7 +1084,7 @@ export function StreamPlayer({
         onRefetch={refetchSubs}
         offset={effectiveOffset}
         offsetScoped={epOffset != null}
-        lead={SUBTITLE_LEAD_S}
+        lead={SUBTITLE_LEAD_S + SUB_CALIBRATION_S}
         onNudge={nudgeOffset}
         onReset={() => applyOffset(null)}
         onSaveDefault={() => setSubOffset(effectiveOffset)}
