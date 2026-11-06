@@ -64,8 +64,10 @@ export function Navbar() {
           />
           <span className="text-lg font-black tracking-tight">
             <span className="text-primary neon-text">Senku</span>
-            <span className="text-foreground">-frame</span>
-            <span className="text-primary">XTV</span>
+            {/* full wordmark needs ≥sm width — on phones the compact mark keeps
+                the header inside the viewport (fixed header overflow = sideways scroll) */}
+            <span className="hidden text-foreground sm:inline">-frame</span>
+            <span className="hidden text-primary sm:inline">XTV</span>
           </span>
         </Link>
 

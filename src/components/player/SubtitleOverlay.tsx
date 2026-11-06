@@ -3,6 +3,7 @@
 import { memo } from "react";
 import type { SubtitleCue } from "@/types";
 import { cueAt, isArabicText } from "@/lib/subParser";
+import { cn } from "@/lib/utils";
 
 // ─── SubtitleOverlay · zero-latency RTL-aware cue renderer ───────────────────
 
@@ -16,9 +17,8 @@ interface Props {
 }
 
 function SubtitleOverlayBase({ cues, currentTime, offset, sizePx, style, visible }: Props) {
-  if (!visible || cues.length === 0) return null;
   const cue = cueAt(cues, currentTime + offset);
-  if (!cue) return null;
+  if (!visible || !cue) return null;
 
   const rtl = isArabicText(cue.text);
 
@@ -30,12 +30,14 @@ function SubtitleOverlayBase({ cues, currentTime, offset, sizePx, style, visible
       role="caption"
     >
       <p
+        key={`${cue.start}-${cue.text.slice(0, 12)}`}
         dir={rtl ? "rtl" : "ltr"}
         lang={rtl ? "ar" : "en"}
         style={{ fontSize: `${sizePx}px` }}
-        className={`subtitle-cue subtitle-outline max-w-[92%] whitespace-pre-line text-center font-semibold text-white sm:max-w-[80%] ${
-          style === "boxed" ? "subtitle-boxed" : ""
-        }`}
+        className={cn(
+          "subtitle-cue subtitle-outline max-w-[92%] whitespace-pre-line text-center font-semibold text-white sm:max-w-[80%]",
+          style === "boxed" && "subtitle-boxed"
+        )}
       >
         {cue.text}
       </p>

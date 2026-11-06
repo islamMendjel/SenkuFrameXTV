@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { usePathname } from "next/navigation";
 import { usePWAInstall } from "@/hooks/usePWAInstall";
 import { useSettings } from "@/lib/store";
 import { useT } from "@/hooks/useT";
@@ -8,13 +9,17 @@ import { Download, X } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 
 // ─── InstallPrompt · subtle Android PWA install banner ───────────────────────
+// Hidden on watch pages: nothing should overlay the player during playback
+// (it was clipping the Autopilot card + transport controls).
 
 export function InstallPrompt() {
   const { canInstall, install } = usePWAInstall();
   const t = useT();
+  const pathname = usePathname();
   const [dismissed, setDismissed] = useState(false);
 
-  const show = canInstall && !dismissed;
+  const onWatchPage = /^\/tv\/[^/]+\/\d+\/\d+/.test(pathname) || /^\/movie\//.test(pathname);
+  const show = canInstall && !dismissed && !onWatchPage;
 
   return (
     <AnimatePresence>

@@ -172,7 +172,17 @@ html:not(.dark) {
   font-family: var(--font-cairo), var(--font-inter), system-ui, sans-serif;
   line-height: 1.55;
   text-wrap: balance;
-  transition: opacity 120ms ease;
+  animation: subtitle-enter 220ms ease-out;
+}
+@keyframes subtitle-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 .subtitle-cue[lang="ar"],
 [dir="rtl"] .subtitle-cue {

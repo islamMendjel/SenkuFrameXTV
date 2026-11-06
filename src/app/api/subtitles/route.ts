@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { parseSubtitles } from "@/lib/subParser";
+import { parseSubtitles, decodeSubtitleBuffer } from "@/lib/subParser";
 import { fetchBestSrt } from "@/lib/subtitlecat";
 import { translateCues } from "@/lib/llmTranslate";
 import { db } from "@/lib/db";
@@ -108,7 +108,8 @@ async function viaOfficialApi(
     const dlData = (await dl.json()) as { link?: string };
     if (!dlData.link) return null;
     const srtRes = await fetch(dlData.link, { cache: "no-store" });
-    const raw = await srtRes.text();
+    // charset-aware decode (Arabic SRTs are often Windows-1256)
+    const raw = decodeSubtitleBuffer(await srtRes.arrayBuffer());
     const cues = parseSubtitles(raw);
     if (cues.length < 5) return null;
     return { cues, track: { id: String(fileId), lang, url: dlData.link } };
@@ -159,7 +160,8 @@ async function viaAddon(
       try {
         const r = await fetch(track.url, { cache: "no-store" });
         if (!r.ok) continue;
-        const cues = parseSubtitles(await r.text());
+        const raw = decodeSubtitleBuffer(await r.arrayBuffer());
+        const cues = parseSubtitles(raw);
         if (cues.length >= 5) {
           return {
             cues,

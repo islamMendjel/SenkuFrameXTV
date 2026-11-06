@@ -1,4 +1,5 @@
 import "server-only";
+import { decodeSubtitleBuffer } from "@/lib/subParser";
 
 // ─── SubtitleCat · keyless English subtitle source (release-matched) ─────────
 // SubtitleCat indexes millions of release-specific .srt files. Searching an
@@ -121,7 +122,7 @@ export async function fetchOriginalSrt(pageUrl: string): Promise<string | null> 
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
     });
     if (!dl.ok) return null;
-    const text = await dl.text();
+    const text = decodeSubtitleBuffer(await dl.arrayBuffer());
     if (!text.includes("-->") && !/^\d+\s*$/m.test(text)) return null;
     return text;
   } catch {

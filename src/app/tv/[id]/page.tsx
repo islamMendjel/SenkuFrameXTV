@@ -46,8 +46,8 @@ export default async function TvPage({ params }: Props) {
       <DetailsHeader meta={meta} watchHref={watchHref} />
 
       <div className="mx-auto max-w-[1600px] space-y-10 px-4 sm:px-6 lg:px-10">
-        <div className="grid gap-8 lg:grid-cols-3">
-          <div className="lg:col-span-2">
+        <div className="grid min-w-0 gap-8 lg:grid-cols-3">
+          <div className="min-w-0 lg:col-span-2">
             <div id="watch" className="scroll-mt-20">
               <div className="relative flex aspect-video w-full items-center justify-center overflow-hidden rounded-2xl border border-border/60 bg-zinc-950">
                 <Link
@@ -64,7 +64,7 @@ export default async function TvPage({ params }: Props) {
             </div>
           </div>
 
-          <aside className="rounded-2xl border border-border/50 bg-card/40 p-4">
+          <aside className="min-w-0 rounded-2xl border border-border/50 bg-card/40 p-4">
             <EpisodePicker meta={meta} imdbId={id} compact />
           </aside>
         </div>

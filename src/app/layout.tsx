@@ -59,7 +59,7 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" dir="ltr" suppressHydrationWarning className="dark">
+    <html lang="en" dir="ltr" suppressHydrationWarning className="dark" data-scroll-behavior="smooth">
       <body className={`${inter.variable} ${cairo.variable} antialiased`}>
         <Providers>
           <div className="flex min-h-screen flex-col bg-background text-foreground">

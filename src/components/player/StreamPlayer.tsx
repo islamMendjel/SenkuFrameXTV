@@ -1,19 +1,37 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getServer, SERVERS } from "@/lib/servers";
 import { useSettings, useHistory } from "@/lib/store";
 import { useT } from "@/hooks/useT";
-import { parseSubtitles } from "@/lib/subParser";
+import { parseSubtitles, decodeSubtitleBuffer, formatClock } from "@/lib/subParser";
+import { usePlayerSync } from "@/hooks/usePlayerSync";
 import type { MediaType, SubtitleCue } from "@/types";
 import { cn } from "@/lib/utils";
 import { SubtitleOverlay } from "./SubtitleOverlay";
 import { ServerSwitcher } from "./ServerSwitcher";
 import { SubtitleSettingsModal } from "./SubtitleSettingsModal";
-import { AlertTriangle, Captions, ExternalLink, MonitorPlay, RefreshCw, Timer } from "lucide-react";
+import { NextEpisodeCard, type NextEpisodeInfo } from "./NextEpisodeCard";
+import {
+  AlertTriangle,
+  Captions,
+  ExternalLink,
+  MonitorPlay,
+  Pause,
+  Play,
+  RefreshCw,
+  Radio,
+  Timer,
+} from "lucide-react";
 import { toast } from "@/hooks/use-toast";
 
-// ─── StreamPlayer · multi-server iframe player w/ subtitle engine ────────────
+// ─── StreamPlayer · multi-server player w/ Autopilot precision sync ──────────
+//
+// VidSrc-family providers post PLAYER_EVENT telemetry (currentTime / duration
+// / play-state) up the relay chain to our window. usePlayerSync turns that
+// into a live clock → perfectly-synced subtitles, an exact transport bar and
+// the end-of-episode Autopilot card. Servers that don't report fall back to
+// a one-tap manual sync clock.
 
 interface Props {
   type: MediaType;
@@ -23,7 +41,8 @@ interface Props {
   episode?: number;
   episodeTitle?: string;
   poster?: string;
-  runtimeMin?: number; // for progress estimation
+  runtimeMin?: number; // for progress estimation (manual mode)
+  nextEpisode?: NextEpisodeInfo;
 }
 
 type SubStatus = "idle" | "loading" | "loaded" | "none";
@@ -41,6 +60,7 @@ export function StreamPlayer({
   episodeTitle,
   poster,
   runtimeMin,
+  nextEpisode,
 }: Props) {
   const t = useT();
   const {
@@ -52,8 +72,6 @@ export function StreamPlayer({
     setPreferredServer,
     setSubLang,
   } = useSettings();
-  const history = useHistory();
-
   const [serverId, setServerId] = useState<string>(() => preferredServer ?? SERVERS[0].id);
   const [frameKey, setFrameKey] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -66,6 +84,11 @@ export function StreamPlayer({
   const triedRef = useRef<Set<string>>(new Set());
   const userPickedRef = useRef(false);
 
+  // ── Autopilot telemetry engine ──
+  const frameToken = `${serverId}-${frameKey}`;
+  const playerFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const sync = usePlayerSync(frameToken, playerFrameRef);
+
   // ── subtitle engine state ──
   const [cues, setCues] = useState<SubtitleCue[]>([]);
   const [subStatus, setSubStatus] = useState<SubStatus>("idle");
@@ -73,11 +96,15 @@ export function StreamPlayer({
   const [localCues, setLocalCues] = useState<SubtitleCue[] | null>(null);
   const localCuesRef = useRef<SubtitleCue[] | null>(null);
 
-  // ── time tracking ──
-  const [providerTime, setProviderTime] = useState<number | null>(null);
-  const [providerSeen, setProviderSeen] = useState(false);
-  const [clockTime, setClockTime] = useState(0);
-  const [clockRunning, setClockRunning] = useState(false);
+  // ── autopilot: derived visibility (no mirrored state → no setState in effect) ──
+  const [autopilotDismissed, setAutopilotDismissed] = useState(false);
+  const autopilotFinished =
+    !!nextEpisode &&
+    (sync.status === "completed" ||
+      (sync.duration > 120 &&
+        sync.status === "playing" &&
+        sync.currentTime >= sync.duration * 0.965));
+  const showAutopilot = autopilotFinished && !autopilotDismissed;
 
   const server = getServer(serverId);
   const src = server.build(type, imdbId, season, episode);
@@ -87,15 +114,10 @@ export function StreamPlayer({
       ? `${title} · ${t("season")} ${season}, ${t("episode")} ${episode}`
       : title;
 
-  // reset load/time state (called from event handlers, not effects)
   const resetPlaybackState = () => {
     setLoading(true);
     setSlow(false);
     setOverlayDismissed(false);
-    setProviderTime(null);
-    setProviderSeen(false);
-    setClockTime(0);
-    setClockRunning(false);
   };
 
   // ── watchdog: 8s veil-cap → 20s auto-failover (per server, once) ──
@@ -118,9 +140,7 @@ export function StreamPlayer({
         setServerId(next.id);
         setPreferredServer(next.id);
         setFrameKey((k) => k + 1);
-        setLoading(true);
-        setSlow(false);
-        setOverlayDismissed(false);
+        resetPlaybackState();
       } else {
         setSlow(true); // every server tried — leave manual switcher
       }
@@ -129,46 +149,7 @@ export function StreamPlayer({
       clearTimeout(veilT);
       clearTimeout(failT);
     };
-  }, [serverId, frameKey, server, t, setPreferredServer]);
-
-  // ── provider postMessage time tracking (tolerant multi-shape listener) ──
-  useEffect(() => {
-    const onMessage = (e: MessageEvent) => {
-      try {
-        const d = e.data;
-        if (!d || typeof d !== "object") return;
-        let time: unknown =
-          d.currentTime ?? d.current_time ?? d.position ?? d.data?.currentTime ?? d.data?.time;
-        if (typeof time === "string" && /^\d+(\.\d+)?$/.test(time)) time = parseFloat(time);
-        if (typeof time === "number" && Number.isFinite(time) && time >= 0 && time < 86400) {
-          setProviderSeen(true);
-          setProviderTime(time);
-        }
-      } catch {
-        /* ignore malformed */
-      }
-    };
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, []);
-
-  // fallback internal clock (started manually if provider doesn't report time)
-  useEffect(() => {
-    if (providerSeen || !clockRunning) return;
-    const started = Date.now() - clockTime * 1000;
-    const iv = setInterval(() => {
-      setClockTime((Date.now() - started) / 1000);
-    }, 500);
-    return () => clearInterval(iv);
-  }, [clockRunning, providerSeen]);
-
-  const effectiveTime = providerSeen ? (providerTime ?? 0) : clockTime;
-
-  const startSync = () => {
-    setClockTime(0);
-    setClockRunning(true);
-    toast({ title: t("play"), description: t("sync") + " 0.0s" });
-  };
+  }, [serverId, frameKey]);
 
   // ── subtitle fetching (Arabic default → English fallback preference) ──
   // Server may respond { pending: true } while the AI translation job runs;
@@ -209,13 +190,6 @@ export function StreamPlayer({
               title: subLang === "ar" ? t("subsLoaded") : t("subsLoadedEn"),
               description: `${got.length.toLocaleString()} cues · ${t("appName")}`,
             });
-            // auto-start the subtitle clock shortly after load (providers
-            // autoplay muted); the Sync button re-zeros it any time
-            setTimeout(() => {
-              if (cancelled) return;
-              setClockTime(0);
-              setClockRunning(true);
-            }, 2500);
           } else {
             setSubStatus("none");
           }
@@ -232,54 +206,41 @@ export function StreamPlayer({
       clearTimeout(loadingT);
       if (pollT) clearTimeout(pollT);
     };
-  }, [subLang, type, imdbId, season, episode, t, subFetchNonce]);
+  }, [subLang, type, imdbId, season, episode, subFetchNonce]);
 
   const refetchSubs = () => setSubFetchNonce((n) => n + 1);
 
   const importFile = async (file: File) => {
-      try {
-        const text = await file.text();
-        const parsed = parseSubtitles(text);
-        if (parsed.length === 0) {
-          setSubStatus("none");
-          toast({ title: t("subsNone"), variant: "destructive" });
-          return;
-        }
-        setLocalCues(parsed);
-        localCuesRef.current = parsed;
-        setCues(parsed);
-        setSubStatus("loaded");
-        setLoadedLang(parsed.some((c) => /[\u0600-\u06FF]/.test(c.text)) ? "ar" : "en");
-        if (subLang === "off") setSubLang("ar");
-        toast({ title: t("subsLoaded"), description: `${parsed.length.toLocaleString()} cues` });
-      } catch {
-        toast({ title: t("error"), variant: "destructive" });
+    try {
+      // charset-aware: CP1256 Arabic uploads decode correctly too
+      const raw = decodeSubtitleBuffer(await file.arrayBuffer());
+      const parsed = parseSubtitles(raw);
+      if (parsed.length === 0) {
+        setSubStatus("none");
+        toast({ title: t("subsNone"), variant: "destructive" });
+        return;
       }
+      setLocalCues(parsed);
+      localCuesRef.current = parsed;
+      setCues(parsed);
+      setSubStatus("loaded");
+      setLoadedLang(parsed.some((c) => /[\u0600-\u06FF]/.test(c.text)) ? "ar" : "en");
+      if (subLang === "off") setSubLang("ar");
+      toast({ title: t("subsLoaded"), description: `${parsed.length.toLocaleString()} cues` });
+    } catch {
+      toast({ title: t("error"), variant: "destructive" });
+    }
   };
 
-  // ── watch history ──
-  useEffect(() => {
-    history.upsert({
-      imdbId,
-      type,
-      title,
-      poster,
-      season,
-      episode,
-      episodeTitle,
-      progressPct: 1,
-    });
-    
-  }, [imdbId, type, season, episode]);
+  // ── watch history: mark visit (keep prior progress), then exact telemetry ──
+  const lastSaveRef = useRef(0);
+  const lastPctRef = useRef(0);
 
-  // periodic progress while watching (approximate; provider time if available)
-  useEffect(() => {
-    const iv = setInterval(() => {
-      const secs = providerSeen ? (providerTime ?? 0) : clockRunning ? clockTime : 0;
-      if (secs <= 0) return;
-      const denom = (type === "series" ? 45 : runtimeMin ?? 110) * 60;
-      const pct = Math.min(97, Math.round((secs / denom) * 100));
-      history.upsert({
+  const saveProgress = useCallback(
+    (pct: number) => {
+      lastPctRef.current = pct;
+      lastSaveRef.current = Date.now();
+      useHistory.getState().upsert({
         imdbId,
         type,
         title,
@@ -287,12 +248,48 @@ export function StreamPlayer({
         season,
         episode,
         episodeTitle,
-        progressPct: Math.max(1, pct),
+        progressPct: Math.max(1, Math.min(100, Math.round(pct))),
       });
-    }, 30000);
-    return () => clearInterval(iv);
-    
-  }, [imdbId, type, providerTime, providerSeen, clockRunning, clockTime, season, episode, runtimeMin]);
+    },
+    [imdbId, type, title, poster, season, episode, episodeTitle]
+  );
+
+  useEffect(() => {
+    // first visit marks 1%, re-visits keep their old progress
+    const prior = useHistory.getState().get(imdbId);
+    saveProgress(prior?.progressPct ?? 1);
+  }, [imdbId, season, episode]);
+
+  // progress pipeline: exact from provider telemetry, estimate in manual mode
+  useEffect(() => {
+    if (sync.status === "completed") {
+      saveProgress(100);
+      return;
+    }
+    if (sync.providerDriven && sync.duration > 0 && sync.currentTime > 0) {
+      const pct = (sync.currentTime / sync.duration) * 100;
+      const due = Date.now() - lastSaveRef.current > 15_000;
+      const milestone = Math.floor(pct / 5) > Math.floor(lastPctRef.current / 5);
+      if (due || milestone) saveProgress(pct);
+    } else if (sync.manualMode && sync.currentTime > 0) {
+      if (Date.now() - lastSaveRef.current > 30_000) {
+        const denom = (type === "series" ? 45 : runtimeMin ?? 110) * 60;
+        saveProgress(Math.min(97, (sync.currentTime / denom) * 100));
+      }
+    }
+  }, [sync.currentTime, sync.duration, sync.status, sync.providerDriven, sync.manualMode, type, runtimeMin]);
+
+  // persist 100% exactly once at completion
+  const autopilotSavedRef = useRef(false);
+  useEffect(() => {
+    if (autopilotFinished && !autopilotSavedRef.current) {
+      autopilotSavedRef.current = true;
+      saveProgress(100);
+    }
+    if (!autopilotFinished) autopilotSavedRef.current = false;
+  }, [autopilotFinished, saveProgress]);
+
+  // ── Autopilot trigger bookkeeping is derived (see autopilotFinished above) ──
 
   const switchServer = (id: string) => {
     if (id === serverId) return;
@@ -314,16 +311,48 @@ export function StreamPlayer({
     window.open(src, "_blank", "noopener");
   };
 
-  const cueCount = cues.length;
+  const startManualSync = () => {
+    sync.armManual();
+    toast({ title: t("syncRunning"), description: t("startSyncHint") });
+  };
+
+  const cueCount = (localCues ?? cues).length;
+  const showSubs = subLang !== "off" && subStatus === "loaded";
+  const progressPct =
+    sync.duration > 0 ? Math.min(100, (sync.currentTime / sync.duration) * 100) : 0;
+
+  // sync-mode chip: precision (live) / estimated / manual
+  const syncChip = !showSubs ? null : sync.providerDriven ? (
+    <span
+      className={cn(
+        "flex min-h-[36px] items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-bold",
+        sync.estimated
+          ? "border-amber-400/50 bg-amber-400/10 text-amber-300"
+          : "border-primary/50 bg-primary/10 text-primary"
+      )}
+      title={sync.estimated ? t("estimatedSync") : t("precisionSync")}
+    >
+      <Radio className={cn("h-3.5 w-3.5", !sync.estimated && "animate-pulse-glow")} aria-hidden />
+      <span className="hidden sm:inline">
+        {sync.estimated ? t("estimatedSync") : t("precisionSync")}
+      </span>
+    </span>
+  ) : sync.manualMode ? (
+    <span className="flex min-h-[36px] items-center gap-1.5 rounded-full border border-amber-400/50 bg-amber-400/10 px-3 py-1.5 text-xs font-bold text-amber-300">
+      <Timer className="h-3.5 w-3.5" aria-hidden />
+      <span className="hidden sm:inline">{t("manualSync")}</span>
+    </span>
+  ) : null;
 
   return (
     <section className="w-full" aria-label={`${t("playerTitle")} ${fullTitle}`}>
       {/* ── Video frame ── */}
       <div className="relative aspect-video w-full overflow-hidden rounded-none border-y border-border/60 bg-black sm:rounded-2xl sm:border">
         <iframe
-          key={`${serverId}-${frameKey}`}
+          key={frameToken}
           src={src}
           title={fullTitle}
+          ref={playerFrameRef}
           className="absolute inset-0 h-full w-full"
           referrerPolicy="origin"
           allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
@@ -337,9 +366,7 @@ export function StreamPlayer({
         {/* loading veil */}
         {loading && (
           <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/85 backdrop-blur-sm">
-            <div className="relative">
-              <MonitorPlay className="h-12 w-12 text-primary animate-pulse-glow" aria-hidden />
-            </div>
+            <MonitorPlay className="h-12 w-12 animate-pulse-glow text-primary" aria-hidden />
             <p className="text-sm font-medium text-zinc-300">
               {t("serverLoading")} {server.name} {server.tag ? `· ${server.tag}` : ""}…
             </p>
@@ -384,37 +411,94 @@ export function StreamPlayer({
           </div>
         )}
 
+        {/* Binge Autopilot: end-of-episode countdown */}
+        {showAutopilot && nextEpisode && (
+          <NextEpisodeCard
+            next={nextEpisode}
+            poster={poster}
+            onDone={() => setAutopilotDismissed(true)}
+            t={t}
+          />
+        )}
+
         {/* subtitle overlay */}
         <SubtitleOverlay
           cues={localCues ?? cues}
-          currentTime={effectiveTime}
+          currentTime={sync.currentTime}
           offset={subOffset}
           sizePx={subSize}
           style={subStyle}
-          visible={subLang !== "off" && subStatus === "loaded"}
+          visible={showSubs}
         />
       </div>
 
       {/* ── Control deck ── */}
       <div className="mt-3 space-y-3 rounded-2xl border border-border/60 bg-card/50 p-3 sm:p-4">
+        {/* live transport (provider telemetry only) */}
+        {sync.providerDriven && (
+          <div className="flex items-center gap-3 rounded-xl border border-border/50 bg-black/40 px-3 py-2">
+            <button
+              onClick={() => sync.sendCommand(sync.status === "playing" ? "pause" : "play")}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary transition-colors hover:bg-primary/25"
+              aria-label={sync.status === "playing" ? t("pause") : t("play")}
+              title={sync.status === "playing" ? t("pause") : t("play")}
+            >
+              {sync.status === "playing" ? (
+                <Pause className="h-4 w-4 fill-primary" aria-hidden />
+              ) : (
+                <Play className="h-4 w-4 fill-primary" aria-hidden />
+              )}
+            </button>
+
+            <span className="shrink-0 font-mono text-xs font-bold tabular-nums text-zinc-300">
+              {formatClock(sync.currentTime)}
+              {sync.duration > 0 && (
+                <span className="text-zinc-500"> / {formatClock(sync.duration)}</span>
+              )}
+            </span>
+
+            {/* progress track (no seek — provider doesn't support it) */}
+            <div
+              className="relative h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-white/10"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(progressPct)}
+            >
+              <div
+                className="absolute inset-y-0 start-0 rounded-full bg-primary transition-[width] duration-300 ease-linear"
+                style={{ width: `${progressPct}%` }}
+              />
+            </div>
+
+            {sync.quality && (
+              <span className="hidden shrink-0 rounded bg-primary/20 px-1.5 py-0.5 font-mono text-[10px] font-black uppercase text-primary sm:inline">
+                {sync.quality}
+              </span>
+            )}
+          </div>
+        )}
+
         <div className="flex flex-wrap items-center justify-between gap-3">
           <ServerSwitcher activeId={serverId} loading={loading} slow={slow} onSelect={switchServer} t={t} />
 
           <div className="flex items-center gap-2">
-            {/* manual subtitle clock (only when provider time absent) */}
-            {!providerSeen && subLang !== "off" && subStatus === "loaded" && (
+            {syncChip}
+
+            {/* manual subtitle clock (servers without telemetry) */}
+            {!sync.providerDriven && showSubs && (
               <button
-                onClick={startSync}
+                onClick={startManualSync}
                 className={cn(
                   "flex min-h-[36px] items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-bold transition-all",
-                  clockRunning
+                  sync.manualMode
                     ? "border-primary/50 bg-primary/10 text-primary"
                     : "border-amber-400/50 bg-amber-400/10 text-amber-300 animate-pulse-glow"
                 )}
-                title={t("sync")}
+                title={t("startSyncHint")}
               >
                 <Timer className="h-3.5 w-3.5" aria-hidden />
-                {clockRunning ? t("sync") : "▶ " + t("sync")}
+                {sync.manualMode ? t("syncRunning") : `▶ ${t("startSync")}`}
               </button>
             )}
 
@@ -423,7 +507,7 @@ export function StreamPlayer({
               onClick={() => setSettingsOpen(true)}
               className={cn(
                 "flex min-h-[36px] items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-bold transition-all",
-                subStatus === "loaded" && subLang !== "off"
+                showSubs
                   ? "border-primary/50 bg-primary/10 text-primary"
                   : "border-border/70 bg-card/60 text-muted-foreground hover:border-primary/40 hover:text-foreground"
               )}
@@ -456,6 +540,11 @@ export function StreamPlayer({
             </button>
           </div>
         </div>
+
+        {/* manual-sync hint (only for silent servers with subs loaded) */}
+        {!sync.providerDriven && showSubs && !sync.manualMode && (
+          <p className="text-[11px] leading-relaxed text-amber-300/80">{t("startSyncHint")}</p>
+        )}
 
         {/* failover hint */}
         {(slow || subStatus === "none") && (

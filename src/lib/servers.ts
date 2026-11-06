@@ -13,14 +13,19 @@ import type { MediaType, ServerDef } from "@/types";
 
 export const SERVERS: ServerDef[] = [
   {
+    // vidsrc.sh is the actual relay/player host (the vidsrc.to shell just
+    // iframes it + injects an extra ad script). Direct embedding keeps the
+    // postMessage relay complete — PLAYER_EVENT telemetry (currentTime,
+    // duration, play/pause) bubbles to our window for precision-sync
+    // subtitles, exact progress and Autopilot.
     id: "vidsrc-to",
     name: "VidSrc",
     tag: "Alpha",
     quality: "1080p",
     build: (type, imdbId, season, episode) =>
       type === "movie"
-        ? `https://vidsrc.to/embed/movie/${imdbId}`
-        : `https://vidsrc.to/embed/tv/${imdbId}/${season ?? 1}/${episode ?? 1}`,
+        ? `https://vidsrc.sh/embed/movie/${imdbId}`
+        : `https://vidsrc.sh/embed/tv/${imdbId}/${season ?? 1}-${episode ?? 1}`,
   },
   {
     id: "vidsrc-icu",
