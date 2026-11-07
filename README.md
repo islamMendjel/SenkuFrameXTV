@@ -193,6 +193,6 @@ bun run lint
 
 <div align="center">
 
-Built with ❤️ by [islamMendjel](https://github.com/islamMendjel) · Powered by [FrameXTV](https://framextv.cc/)
+Built by [islamMendjel](https://github.com/islamMendjel) · Powered by [FrameXTV](https://framextv.cc/)
 
 </div>
