@@ -1,7 +1,7 @@
 <div align="center">
 <!--
 <img src="https://senkuframextv.space-z.ai/_next/image?url=%2Flogo.png&w=96&q=75" alt="Senku-frameXTV Logo" width="80" />
-
+-->
 <img src="https://raw.githubusercontent.com/islamMendjel/SenkuFrameXTV/refs/heads/main/public/logo.png?url=%2Flogo.png&w=96&q=75" alt="Senku-frameXTV Logo" width="80" />
 
 # Senku-frameXTV
