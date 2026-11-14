@@ -18,7 +18,7 @@
 
 ## ✨ What is Senku-frameXTV?
 
-**Senku-frameXTV** is a cinematic streaming web app built for the Arab world. It surfaces trending movies, series, anime, and regional Arab content with a beautiful dark UI, Arabic-first subtitle priority, and seamless multi-server video playback powered by [FrameXTV](https://framextv.cc/).
+**Senku-frameXTV** is a streaming web app built for the Arab world. It surfaces trending movies, series, anime, and regional Arab content with a beautiful dark UI, Arabic-first subtitle priority, and seamless multi-server video playback powered by [FrameXTV](https://framextv.cc/).
 
 > No files are hosted. Senku-frameXTV streams via third-party providers.
 
